@@ -16,6 +16,8 @@ env:
 
 permissions:
   actions: read
+  # Check-run steps use this token when no GitHub App is configured (see .github/actions/gh-app-token).
+  checks: write
   contents: read
   pull-requests: read
 

@@ -21,7 +21,19 @@ runs:
         ID: ${{ inputs.app_id }}
         KEY: ${{ inputs.private_key }}
         REPO: ${{ inputs.repo }}
+        # Used only when this copy of the repository has no `JP_LAUNCH_CONTROL_*` app configured.
+        FALLBACK_TOKEN: ${{ github.token }}
       run: |
+        if [[ -z "$ID" || -z "$KEY" ]]; then
+            echo "::warning::No GitHub App credentials configured; using the workflow token instead."
+            if [[ -z "$FALLBACK_TOKEN" ]]; then
+                echo "::error::No GitHub App credentials and no workflow token available."
+                exit 1
+            fi
+            echo "token=$FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
+            exit 0
+        fi
+
         HEADER=$( jq -cjn '{ alg: "RS256" }' | base64 -w 0 | tr -d $'=\n' | tr /+ _- )
         PAYLOAD=$( jq -cjn --arg id "$ID"  '{ iat: ( now - 60 | floor ), exp: ( now + 540 | floor ), "iss": ( $id | tonumber ) }' | base64 | tr -d $'=\n' | tr /+ _- )
         SIGNATURE=$( printf "%s.%s" "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign /dev/fd/3 -binary 3<<<"$KEY" | base64 | tr -d $'=\n' | tr /+ _- )
