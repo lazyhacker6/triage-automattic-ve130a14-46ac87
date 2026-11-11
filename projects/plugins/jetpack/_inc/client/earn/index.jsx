@@ -1,0 +1,226 @@
+import { getRedirectUrl } from '@automattic/jetpack-components';
+import { useCallback } from '@wordpress/element';
+import { __, _x } from '@wordpress/i18n';
+import { connect } from 'react-redux';
+import Card from 'components/card';
+import QuerySite from 'components/data/query-site';
+import PointerCard from 'components/pointer-card';
+import SettingsCard from 'components/settings-card';
+import SettingsGroup from 'components/settings-group';
+import { getSupportUrl, openWpcomSupportDoc } from 'components/support-link';
+import analytics from 'lib/analytics';
+import { FEATURE_SIMPLE_PAYMENTS_JETPACK } from 'lib/plans/constants';
+import { getAdsSettingsUrl, isMovedOut } from 'lib/settings-consolidation';
+import {
+	hasConnectedOwner as hasConnectedOwnerSelector,
+	isOfflineMode,
+	isUnavailableInOfflineMode as isUnavailableInOfflineModeSelector,
+} from 'state/connection';
+import { getSiteId } from 'state/initial-state';
+import { getModule } from 'state/modules';
+import { isModuleFound as isModuleFoundSelector } from 'state/search';
+import { Ads } from './ads';
+
+/**
+ * Earn Feature description card.
+ *
+ * @param {object} props - Component props.
+ * @return {import('react').Component} Feature description and CTA.
+ */
+export function EarnFeatureButton( props ) {
+	const {
+		buttonText,
+		featureConstant = '',
+		featureName,
+		infoLink,
+		infoDescription,
+		supportLink,
+		wpcomSupportLink,
+		wpcomInfoLink,
+		title,
+	} = props;
+
+	const trackButtonClick = useCallback(
+		event => {
+			analytics.tracks.recordJetpackClick( {
+				target: `visit-${ featureName }`,
+				feature: 'earn',
+			} );
+			openWpcomSupportDoc( event, wpcomInfoLink );
+		},
+		[ featureName, wpcomInfoLink ]
+	);
+
+	return (
+		<SettingsCard
+			{ ...props }
+			header={ title }
+			hideButton
+			module="earn"
+			feature={ featureConstant ? featureConstant : undefined }
+		>
+			<SettingsGroup
+				disableInOfflineMode
+				disableInSiteConnectionMode
+				support={ {
+					link: supportLink,
+					wpcomLink: wpcomSupportLink,
+				} }
+			>
+				{ infoDescription }
+			</SettingsGroup>
+			<Card
+				compact
+				className="jp-settings-card__configure-link"
+				onClick={ trackButtonClick }
+				href={ getSupportUrl( infoLink, wpcomInfoLink ) }
+				target="_blank"
+			>
+				{ buttonText }
+			</Card>
+		</SettingsCard>
+	);
+}
+
+/**
+ * Earn Section.
+ *
+ * @param {object} props - Component props.
+ * @return {import('react').Component} Earn settings component.
+ */
+export function Earn( props ) {
+	const {
+		active,
+		hasConnectedOwner,
+		isModuleFound,
+		isOffline,
+		searchTerm,
+		siteRawUrl,
+		blogID,
+		feature,
+	} = props;
+
+	if ( ! searchTerm && ! active ) {
+		return null;
+	}
+
+	// Once the Ads settings have a new home, only a search shows their pointer here.
+	const adsSettingsUrl = getAdsSettingsUrl(),
+		foundAds = isModuleFound( 'wordads' ) && ( ! adsSettingsUrl || Boolean( searchTerm ) ),
+		foundEarnBlocks = ! isMovedOut( 'earn' ) && isModuleFound( 'earn' );
+
+	if ( ! foundAds && ! foundEarnBlocks ) {
+		return null;
+	}
+
+	const paymentBlocks = () => {
+		if ( isOffline ) {
+			return (
+				<SettingsGroup>
+					<div className="jp-form-block-fade" />
+					{ __( 'Unavailable in Offline Mode.', 'jetpack' ) }
+				</SettingsGroup>
+			);
+		}
+
+		if ( ! hasConnectedOwner ) {
+			return (
+				<SettingsCard
+					{ ...props }
+					hideButton
+					module="earn"
+					header={ __( 'Collect payments', 'jetpack' ) }
+					feature={ feature }
+				/>
+			);
+		}
+
+		return (
+			<>
+				<EarnFeatureButton
+					{ ...props }
+					featureName="payments"
+					title={ __( 'Collect payments', 'jetpack' ) }
+					supportLink={ getRedirectUrl( 'jetpack-support-jetpack-blocks-payments-block' ) }
+					wpcomSupportLink="https://wordpress.com/support/wordpress-editor/blocks/payments/"
+					infoLink={ getRedirectUrl( 'wpcom-earn-payments', {
+						site: blogID ?? siteRawUrl,
+					} ) }
+					infoDescription={ __(
+						'Let visitors pay for digital goods and services or make quick, pre-set donations by enabling the Payment Button block.',
+						'jetpack'
+					) }
+					buttonText={ __( 'Enable payment button', 'jetpack' ) }
+				/>
+				<EarnFeatureButton
+					{ ...props }
+					featureName="donations"
+					title={ __( 'Accept donations and tips', 'jetpack' ) }
+					supportLink={ getRedirectUrl( 'jetpack-support-jetpack-blocks-donations-block' ) }
+					wpcomSupportLink="https://wordpress.com/support/wordpress-editor/blocks/donations/"
+					infoLink={ getRedirectUrl( 'wpcom-earn-payments', {
+						site: blogID ?? siteRawUrl,
+					} ) }
+					infoDescription={ __(
+						'Accept one-time and recurring donations by enabling the Donations Form block.',
+						'jetpack'
+					) }
+					buttonText={ __( 'Enable donations form', 'jetpack' ) }
+				/>
+				<EarnFeatureButton
+					{ ...props }
+					featureName="paypal"
+					title={ __( 'Collect PayPal payments', 'jetpack' ) }
+					supportLink={ getRedirectUrl( 'jetpack-support-pay-with-paypal' ) }
+					wpcomSupportLink="https://wordpress.com/support/wordpress-editor/blocks/pay-with-paypal/"
+					infoLink={ getRedirectUrl( 'jetpack-support-pay-with-paypal' ) }
+					wpcomInfoLink="https://wordpress.com/support/wordpress-editor/blocks/pay-with-paypal/"
+					infoDescription={ __(
+						'Accept credit card payments via PayPal for physical products, services, donations, or support of your creative work.',
+						'jetpack'
+					) }
+					buttonText={ __( 'Learn how to get started', 'jetpack' ) }
+					featureConstant={ FEATURE_SIMPLE_PAYMENTS_JETPACK }
+				/>
+			</>
+		);
+	};
+
+	return (
+		<div>
+			<QuerySite />
+			<h1 className="screen-reader-text">{ __( 'Jetpack Earn Settings', 'jetpack' ) }</h1>
+			{ searchTerm && <h2 className="jp-settings__section-title">{ __( 'Earn', 'jetpack' ) }</h2> }
+			{ foundAds && adsSettingsUrl && (
+				<PointerCard
+					header={ _x( 'Ads', 'Ads header', 'jetpack' ) }
+					href={ adsSettingsUrl }
+					linkText={ __( 'Open Ads settings', 'jetpack' ) }
+				>
+					{ __( 'Your ads settings are on the Monetize page.', 'jetpack' ) }
+				</PointerCard>
+			) }
+			{ foundAds && ! adsSettingsUrl && (
+				<Ads
+					{ ...props }
+					configureUrl={ getRedirectUrl( 'calypso-stats-ads-day', {
+						site: blogID ?? siteRawUrl,
+					} ) }
+				/>
+			) }
+			{ foundEarnBlocks && paymentBlocks() }
+		</div>
+	);
+}
+
+export default connect( state => {
+	return {
+		hasConnectedOwner: hasConnectedOwnerSelector( state ),
+		module: module_name => getModule( state, module_name ),
+		isOffline: isOfflineMode( state ),
+		isModuleFound: module_name => isModuleFoundSelector( state, module_name ),
+		isUnavailableInOfflineMode: module_name =>
+			isUnavailableInOfflineModeSelector( state, module_name ),
+		blogID: getSiteId( state ),
+	};
+} )( Earn );

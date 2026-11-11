@@ -1,0 +1,46 @@
+import { formatCurrency } from '@automattic/number-formatters';
+import { __ } from '@wordpress/i18n';
+import clsx from 'clsx';
+import useProduct from '../../data/products/use-product';
+import LoadingBlock from '../loading-block';
+import styles from './style.module.scss';
+import usePricingData from './use-pricing-data';
+
+const PriceComponent = ( { slug }: { slug: string } ) => {
+	const { detail, isLoading: isProductLoading } = useProduct( slug );
+
+	const { discountPrice, fullPrice, currencyCode, isFeature, hasFreeOffering } =
+		usePricingData( slug );
+	const isFree = ! fullPrice && ( detail.pricingForUi?.isFree || ( isFeature && hasFreeOffering ) );
+
+	if ( isProductLoading ) {
+		return (
+			<div className={ styles.priceContainer }>
+				<LoadingBlock width="100%" height="20px" />
+			</div>
+		);
+	}
+	// No catalog price: a paid product must not read as $0.
+	if ( fullPrice == null && ! isFree ) {
+		return null;
+	}
+
+	return (
+		<div className={ styles.priceContainer }>
+			{ discountPrice && (
+				<span className={ styles.price }>{ formatCurrency( discountPrice, currencyCode ) }</span>
+			) }
+			<span className={ clsx( styles.price, { [ styles.discounted ]: discountPrice } ) }>
+				{ ! isFree && formatCurrency( fullPrice, currencyCode ) }
+				{ isFree && __( 'Free', 'jetpack-my-jetpack' ) }
+			</span>
+			{ ! isFree && (
+				<span className={ styles.term }>
+					{ __( '/month, billed yearly', 'jetpack-my-jetpack' ) }
+				</span>
+			) }
+		</div>
+	);
+};
+
+export default PriceComponent;

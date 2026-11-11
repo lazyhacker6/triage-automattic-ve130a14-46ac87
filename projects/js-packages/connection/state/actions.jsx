@@ -1,0 +1,276 @@
+import restApi from '@automattic/jetpack-api';
+
+const SET_CONNECTION_STATUS = 'SET_CONNECTION_STATUS';
+const SET_CONNECTION_STATUS_IS_FETCHING = 'SET_CONNECTION_STATUS_IS_FETCHING';
+const FETCH_CONNECTION_STATUS = 'FETCH_CONNECTION_STATUS';
+const SET_SITE_IS_REGISTERING = 'SET_SITE_IS_REGISTERING';
+const SET_USER_IS_CONNECTING = 'SET_USER_IS_CONNECTING';
+const SET_REGISTRATION_ERROR = 'SET_REGISTRATION_ERROR';
+const CLEAR_REGISTRATION_ERROR = 'CLEAR_REGISTRATION_ERROR';
+const SET_USER_CONNECTION_ERROR = 'SET_USER_CONNECTION_ERROR';
+const CLEAR_USER_CONNECTION_ERROR = 'CLEAR_USER_CONNECTION_ERROR';
+const REGISTER_SITE = 'REGISTER_SITE';
+const SET_AUTHORIZATION_URL = 'SET_AUTHORIZATION_URL';
+const CONNECT_USER = 'CONNECT_USER';
+const DISCONNECT_USER_SUCCESS = 'DISCONNECT_USER_SUCCESS';
+const FETCH_AUTHORIZATION_URL = 'FETCH_AUTHORIZATION_URL';
+const SET_CONNECTED_PLUGINS = 'SET_CONNECTED_PLUGINS';
+const REFRESH_CONNECTED_PLUGINS = 'REFRESH_CONNECTED_PLUGINS';
+const SET_CONNECTION_ERRORS = 'SET_CONNECTION_ERRORS';
+const SET_IS_OFFLINE_MODE = 'SET_IS_OFFLINE_MODE';
+const SET_CONNECTION_OWNER = 'SET_CONNECTION_OWNER';
+
+/**
+ * Record that ownership of the connection has moved.
+ *
+ * Patched from the transfer rather than refetched: nothing else in the user connection
+ * data turns on ownership — the permissions it reports are plain capability checks — so
+ * a request would only confirm what the caller already knows.
+ *
+ * @param {object} owner             - The new owner.
+ * @param {number} owner.id          - Their local user ID.
+ * @param {string} owner.displayName - Their display name.
+ * @return {object} The action.
+ */
+const setConnectionOwner = owner => {
+	return { type: SET_CONNECTION_OWNER, owner };
+};
+
+const setConnectionStatus = connectionStatus => {
+	return { type: SET_CONNECTION_STATUS, connectionStatus };
+};
+
+const setConnectionStatusIsFetching = isFetching => {
+	return { type: SET_CONNECTION_STATUS_IS_FETCHING, isFetching };
+};
+
+const fetchConnectionStatus = () => {
+	return { type: FETCH_CONNECTION_STATUS };
+};
+
+const setSiteIsRegistering = isRegistering => {
+	return { type: SET_SITE_IS_REGISTERING, isRegistering };
+};
+
+const setUserIsConnecting = isConnecting => {
+	return { type: SET_USER_IS_CONNECTING, isConnecting };
+};
+
+/**
+ * Record that the current user is no longer connected to WordPress.com.
+ *
+ * @param {object}  [options]                    - Options.
+ * @param {boolean} [options.wasConnectionOwner] - Whether the unlinked user owned the connection.
+ *                                               Disconnecting the owner deletes the
+ *                                               `master_user` option, so the site is left with
+ *                                               no owner of record either.
+ * @return {object} The action.
+ */
+const disconnectUserSuccess = ( { wasConnectionOwner = false } = {} ) => {
+	return { type: DISCONNECT_USER_SUCCESS, wasConnectionOwner };
+};
+
+const setRegistrationError = registrationError => {
+	return { type: SET_REGISTRATION_ERROR, registrationError };
+};
+
+const clearRegistrationError = () => {
+	return { type: CLEAR_REGISTRATION_ERROR };
+};
+
+const setUserConnectionError = userConnectionError => {
+	return { type: SET_USER_CONNECTION_ERROR, userConnectionError };
+};
+
+const clearUserConnectionError = () => {
+	return { type: CLEAR_USER_CONNECTION_ERROR };
+};
+
+const setAuthorizationUrl = authorizationUrl => {
+	return { type: SET_AUTHORIZATION_URL, authorizationUrl };
+};
+
+const fetchAuthorizationUrl = redirectUri => {
+	return { type: FETCH_AUTHORIZATION_URL, redirectUri };
+};
+
+const setConnectedPlugins = connectedPlugins => {
+	return { type: SET_CONNECTED_PLUGINS, connectedPlugins };
+};
+
+const setConnectionErrors = connectionErrors => {
+	return { type: SET_CONNECTION_ERRORS, connectionErrors };
+};
+
+/**
+ * No-op kept for older bundles that still call it against this shared store.
+ *
+ * @deprecated 2.10.0 Connection health-check errors are no longer surfaced in notices.
+ * @return {Function} Thunk resolving with an empty error map.
+ */
+const runConnectionHealthCheck = () => async () => ( {} );
+
+const setIsOfflineMode = isOfflineMode => {
+	return { type: SET_IS_OFFLINE_MODE, isOfflineMode };
+};
+
+/**
+ * Connect site with wp.com user
+ *
+ * On failure the error is recorded, `userIsConnecting` is reset and the promise rejects.
+ * On success `userIsConnecting` stays set, so the UI stays busy while the browser leaves.
+ *
+ * @param {object}   Object                   - contains from and redirectFunc
+ * @param {string}   Object.from              - Value that represents the redirect origin
+ * @param {Function} Object.redirectFunc      - A function to handle the redirect, defaults to location.assign
+ * @param {string}   [Object.redirectUri]     - A URI that the user will be redirected to
+ * @param {boolean}  [Object.skipPricingPage] - A flag to skip the pricing page in the connection flow
+ * @yield {object} Action object that will be yielded
+ * @return {Promise|undefined} A rejected promise on failure, otherwise nothing
+ */
+function* connectUser( { from, redirectFunc, redirectUri, skipPricingPage } = {} ) {
+	yield clearUserConnectionError();
+	yield setUserIsConnecting( true );
+
+	try {
+		yield { type: CONNECT_USER, from, redirectFunc, redirectUri, skipPricingPage };
+	} catch ( error ) {
+		yield setUserConnectionError( error );
+		yield setUserIsConnecting( false );
+		return Promise.reject( error );
+	}
+}
+
+/**
+ *
+ * Register an site into jetpack
+ *
+ * @param {object} Object                   - contains registrationNonce and redirectUri
+ * @param {string} Object.registrationNonce - Registration nonce
+ * @param {string} Object.redirectUri       - URI that user will be redirected
+ * @param {string} [Object.from]            - Value that represents the origin of the request (optional)
+ * @yield {object} Action object that will be yielded
+ * @return {Promise} Resolved or rejected value of registerSite
+ */
+function* registerSite( { registrationNonce, redirectUri, from = '' } ) {
+	yield clearRegistrationError();
+	yield clearUserConnectionError();
+	yield setSiteIsRegistering( true );
+
+	try {
+		const response = yield { type: REGISTER_SITE, registrationNonce, redirectUri, from };
+		yield setConnectionStatus( { isRegistered: true } );
+		yield setAuthorizationUrl( response.authorizeUrl );
+		yield setSiteIsRegistering( false );
+		return Promise.resolve( response );
+	} catch ( error ) {
+		yield setRegistrationError( error );
+		yield setSiteIsRegistering( false );
+		return Promise.reject( error );
+	}
+}
+
+/**
+ * Side effect action which will fetch a new list of connectedPlugins from the server
+ *
+ * @return {Promise} - Promise which resolves when the product status is activated.
+ */
+const refreshConnectedPlugins =
+	() =>
+	async ( { dispatch } ) => {
+		return await new Promise( resolve => {
+			return restApi.fetchConnectedPlugins().then( data => {
+				dispatch( setConnectedPlugins( data ) );
+				resolve( data );
+			} );
+		} );
+	};
+
+/**
+ * Read the site's connection status from the server again and record it in the store.
+ *
+ * The store is otherwise filled once, from the page's initial state, so it cannot see a connection made in another tab.
+ *
+ * @return {Function} Thunk that resolves with the fresh status.
+ */
+const refreshConnectionStatus =
+	() =>
+	async ( { dispatch } ) => {
+		const status = await restApi.fetchSiteConnectionStatus();
+		dispatch( setConnectionStatus( status ) );
+
+		return status;
+	};
+
+/**
+ * Unlink the current user from WordPress.com and record it in the store.
+ *
+ * The one place an unlink happens, so every surface reflects it the same way rather than
+ * patching its own copy of the connection state afterwards. Rejects with the API's error so
+ * the caller can word the failure for its own audience.
+ *
+ * @param {object}  [options]                    - Options.
+ * @param {boolean} [options.force]              - Force the disconnection. An administrator
+ *                                               unlinking themselves needs it.
+ * @param {boolean} [options.disconnectAllUsers] - Also unlink every other user, which
+ *                                               disconnecting the owner requires.
+ * @return {Function} Thunk.
+ */
+const unlinkUser =
+	( { force = false, disconnectAllUsers = false } = {} ) =>
+	async ( { dispatch, select } ) => {
+		// Read before the request: what the unlink means for the store follows from who the
+		// viewer is, not from what the caller asked the endpoint to do.
+		const wasConnectionOwner = Boolean( select.getUserConnectionData()?.currentUser?.isMaster );
+
+		await restApi.unlinkUser( force, { disconnectAllUsers } );
+		dispatch( disconnectUserSuccess( { wasConnectionOwner } ) );
+	};
+
+const actions = {
+	setConnectionOwner,
+	setConnectionStatus,
+	setConnectionStatusIsFetching,
+	fetchConnectionStatus,
+	fetchAuthorizationUrl,
+	setSiteIsRegistering,
+	setUserIsConnecting,
+	setRegistrationError,
+	clearRegistrationError,
+	setUserConnectionError,
+	clearUserConnectionError,
+	setAuthorizationUrl,
+	registerSite,
+	connectUser,
+	disconnectUserSuccess,
+	unlinkUser,
+	setConnectedPlugins,
+	refreshConnectedPlugins,
+	refreshConnectionStatus,
+	setConnectionErrors,
+	runConnectionHealthCheck,
+	setIsOfflineMode,
+};
+
+export {
+	SET_CONNECTION_STATUS,
+	SET_CONNECTION_STATUS_IS_FETCHING,
+	FETCH_CONNECTION_STATUS,
+	FETCH_AUTHORIZATION_URL,
+	SET_SITE_IS_REGISTERING,
+	SET_USER_IS_CONNECTING,
+	SET_REGISTRATION_ERROR,
+	CLEAR_REGISTRATION_ERROR,
+	SET_USER_CONNECTION_ERROR,
+	CLEAR_USER_CONNECTION_ERROR,
+	REGISTER_SITE,
+	SET_AUTHORIZATION_URL,
+	CONNECT_USER,
+	DISCONNECT_USER_SUCCESS,
+	SET_CONNECTED_PLUGINS,
+	REFRESH_CONNECTED_PLUGINS,
+	SET_CONNECTION_ERRORS,
+	SET_IS_OFFLINE_MODE,
+	SET_CONNECTION_OWNER,
+	actions as default,
+};

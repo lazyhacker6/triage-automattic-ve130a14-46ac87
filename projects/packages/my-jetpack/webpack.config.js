@@ -1,0 +1,73 @@
+import path from 'path';
+import jetpackWebpackConfig from '@automattic/jetpack-webpack-config/webpack';
+
+const __dirname = import.meta.dirname;
+
+export default [
+	{
+		entry: {
+			onboarding: './_inc/onboarding.jsx',
+			'async-notification-bubble': './_inc/utils/async-notification-bubble.ts',
+			'header-controls': './_inc/header-controls-script.tsx',
+		},
+		mode: jetpackWebpackConfig.mode,
+		devtool: jetpackWebpackConfig.devtool,
+		output: {
+			...jetpackWebpackConfig.output,
+			path: path.resolve( './build' ),
+		},
+		optimization: {
+			...jetpackWebpackConfig.optimization,
+		},
+		resolve: {
+			...jetpackWebpackConfig.resolve,
+		},
+		node: false,
+		plugins: [ ...jetpackWebpackConfig.StandardPlugins() ],
+		module: {
+			strictExportPresence: true,
+			rules: [
+				// Transpile JavaScript
+				jetpackWebpackConfig.TranspileRule( {
+					exclude: /node_modules\//,
+				} ),
+
+				// Transpile @automattic/jetpack-* in node_modules too.
+				jetpackWebpackConfig.TranspileRule( {
+					includeNodeModules: [ '@automattic/jetpack-' ],
+				} ),
+
+				// Workarounds for non-extracted `@wordpress/*` packages.
+				...jetpackWebpackConfig.BundledWpPkgsTranspileRules(),
+
+				// Handle CSS.
+				jetpackWebpackConfig.CssRule( {
+					extensions: [ 'css', 'sass', 'scss' ],
+					extraLoaders: [
+						{
+							loader: 'postcss-loader',
+							options: {
+								postcssOptions: {
+									config: path.join( __dirname, 'postcss.config.js' ),
+								},
+							},
+						},
+						{ loader: 'sass-loader', options: { api: 'modern-compiler' } },
+					],
+				} ),
+
+				// Handle images.
+				jetpackWebpackConfig.FileRule(),
+			],
+		},
+		externals: {
+			...jetpackWebpackConfig.externals,
+			jetpackConfig: JSON.stringify( {
+				consumer_slug: 'my_jetpack',
+			} ),
+		},
+		devServer: jetpackWebpackConfig.DevServer( {
+			static: { directory: path.resolve( './build' ) },
+		} ),
+	},
+];

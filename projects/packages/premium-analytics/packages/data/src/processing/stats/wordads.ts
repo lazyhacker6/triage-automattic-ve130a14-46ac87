@@ -1,0 +1,195 @@
+import { localTZDate } from '@jetpack-premium-analytics/datetime';
+import { format } from 'date-fns';
+import { safeParseFloat } from '../../utils/parsing';
+import { sanitizeStatsTimeSeriesResponse, type StatsTimeSeriesDataPoint } from './time-series';
+import { coerceStatsRecord } from './utils';
+import type { StatsNormalizedReport, StatsNormalizedSummary, StatsRecord } from './types';
+import type { StatsQueryParams } from '../../utils/stats-params';
+
+export type StatsWordAdsRawField = 'period' | 'impressions' | 'revenue' | 'cpm';
+
+export type StatsWordAdsRawResponse = {
+	unit?: string;
+	fields?: StatsWordAdsRawField[];
+	data?: Array< Array< string | number | null > >;
+};
+
+export type StatsWordAdsDataPoint = StatsTimeSeriesDataPoint & {
+	/** Null for today's bucket, which WordAds has not counted yet. */
+	impressions?: number | null;
+	revenue?: number | null;
+	/** Null when no ads were served (CPM is undefined there, not zero), or for today's bucket. */
+	cpm?: number | null;
+	/** Set on a day bucket WordAds has not counted yet (the current UTC day onward): its zeros are not readings. */
+	pending?: true;
+};
+
+export type StatsWordAdsResponse = StatsNormalizedReport & {
+	data: StatsWordAdsDataPoint[];
+};
+
+export type StatsWordAdsEarningsRawPeriod = {
+	amount?: number | string | null;
+	pageviews?: number | string | null;
+	status?: number | string | null;
+};
+
+export type StatsWordAdsEarningsRawBreakdown = Record< string, StatsWordAdsEarningsRawPeriod >;
+
+export type StatsWordAdsEarningsRaw = {
+	total_earnings?: number | string | null;
+	total_amount_owed?: number | string | null;
+	wordads?: StatsWordAdsEarningsRawBreakdown;
+	sponsored?: StatsWordAdsEarningsRawBreakdown;
+	adjustment?: StatsWordAdsEarningsRawBreakdown;
+};
+
+export type StatsWordAdsEarningsRawResponse = {
+	earnings?: StatsWordAdsEarningsRaw;
+};
+
+export type StatsWordAdsEarningsPeriod = {
+	amount: number;
+	/**
+	 * Ads served, or `undefined` when the payload has none: legacy rows carry
+	 * `"N/A"`, and sponsored and adjustment rows omit the field. `0` would
+	 * assert that no ads were served.
+	 */
+	pageviews: number | undefined;
+	/**
+	 * The payment status code, or `undefined` when the payload omits it. `0` is
+	 * itself a meaningful status ("Unpaid"), so a missing status must not
+	 * collapse into it.
+	 */
+	status: number | undefined;
+};
+
+export type StatsWordAdsEarningsBreakdown = Record< string, StatsWordAdsEarningsPeriod >;
+
+export type StatsWordAdsEarnings = {
+	total_earnings: number;
+	total_amount_owed: number;
+	wordads: StatsWordAdsEarningsBreakdown;
+	sponsored: StatsWordAdsEarningsBreakdown;
+	adjustment: StatsWordAdsEarningsBreakdown;
+};
+
+export type StatsWordAdsEarningsResponse = StatsWordAdsEarnings;
+
+const earningsBreakdownKeys = [ 'wordads', 'sponsored', 'adjustment' ] as const;
+
+function summarizeWordAdsStats(
+	data: StatsWordAdsDataPoint[],
+	baseSummary: StatsNormalizedSummary
+): StatsNormalizedSummary {
+	if ( ! data.length ) {
+		return baseSummary;
+	}
+
+	const totals = data.reduce(
+		( summary, row ) => ( {
+			impressions: summary.impressions + safeParseFloat( row.impressions ),
+			revenue: summary.revenue + safeParseFloat( row.revenue ),
+		} ),
+		{ impressions: 0, revenue: 0 }
+	);
+
+	return {
+		...baseSummary,
+		impressions: totals.impressions,
+		revenue: totals.revenue,
+		cpm: totals.impressions ? ( totals.revenue / totals.impressions ) * 1000 : null,
+	};
+}
+
+// WPCOM writes `cpm = 0` for a bucket with no impressions, as a divide-by-zero guard.
+function withoutUnservedCpm( row: StatsWordAdsDataPoint ): StatsWordAdsDataPoint {
+	return row.impressions === 0 ? { ...row, cpm: null } : row;
+}
+
+/**
+ * Mark the day buckets WordAds has not counted yet as pending. A day's numbers
+ * arrive once that day ends in UTC, so the endpoint serves the current UTC day
+ * (and, east of UTC, the site's today) as zeros that nothing in the payload tells
+ * from real zeros.
+ *
+ * @param data   - The normalized rows, oldest first.
+ * @param period - The query's bucket size.
+ * @return The rows, with the uncounted days' values nulled and the rows flagged.
+ */
+function withPendingDays(
+	data: StatsWordAdsDataPoint[],
+	period: string | undefined
+): StatsWordAdsDataPoint[] {
+	// A week or month bucket that includes today is partial, not empty, so it stands.
+	if ( ( period ?? 'day' ) !== 'day' ) {
+		return data;
+	}
+
+	const todayInUtc = format( localTZDate( Date.now(), 'UTC' ), 'yyyy-MM-dd' );
+
+	return data.map( row =>
+		row.time_interval >= todayInUtc
+			? { ...row, impressions: null, revenue: null, cpm: null, pending: true }
+			: row
+	);
+}
+
+function normalizeEarningsPeriod( value: StatsRecord ): StatsWordAdsEarningsPeriod {
+	// Not `safeParseFloat`: its `fallback = 0` fires on an explicit `undefined`,
+	// and `0` means something for both fields, so an absent value must stay absent.
+	const pageviews = parseFloat( String( value.pageviews ) );
+	const status = parseFloat( String( value.status ) );
+
+	return {
+		amount: safeParseFloat( value.amount ),
+		pageviews: isNaN( pageviews ) ? undefined : pageviews,
+		status: isNaN( status ) ? undefined : status,
+	};
+}
+
+function normalizeEarningsBreakdown( value: unknown ): StatsWordAdsEarningsBreakdown {
+	return Object.fromEntries(
+		Object.entries( coerceStatsRecord( value ) ).map( ( [ period, item ] ) => [
+			period,
+			normalizeEarningsPeriod( coerceStatsRecord( item ) ),
+		] )
+	);
+}
+
+export function sanitizeStatsWordAdsStatsResponse(
+	response: StatsWordAdsRawResponse,
+	query?: StatsQueryParams
+): StatsWordAdsResponse;
+export function sanitizeStatsWordAdsStatsResponse(
+	response: unknown,
+	query?: StatsQueryParams
+): StatsWordAdsResponse {
+	const report = sanitizeStatsTimeSeriesResponse( response, query ) as StatsWordAdsResponse;
+
+	const data = withPendingDays( report.data.map( withoutUnservedCpm ), query?.period );
+
+	return {
+		...report,
+		data,
+		// A pending bucket's nulls add nothing, so the totals cover counted days only.
+		summary: summarizeWordAdsStats( data, report.summary ),
+	};
+}
+
+export function sanitizeStatsWordAdsEarningsResponse(
+	response: StatsWordAdsEarningsRawResponse
+): StatsWordAdsEarningsResponse;
+export function sanitizeStatsWordAdsEarningsResponse(
+	response: unknown
+): StatsWordAdsEarningsResponse {
+	const earnings = coerceStatsRecord( coerceStatsRecord( response ).earnings );
+
+	return {
+		total_earnings: safeParseFloat( earnings.total_earnings ),
+		total_amount_owed: safeParseFloat( earnings.total_amount_owed ),
+		...Object.fromEntries(
+			earningsBreakdownKeys.map( key => [ key, normalizeEarningsBreakdown( earnings[ key ] ) ] )
+		),
+	} as StatsWordAdsEarningsResponse;
+}

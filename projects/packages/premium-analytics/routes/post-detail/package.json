@@ -1,0 +1,8 @@
+{
+	"private": true,
+	"name": "@automattic/jetpack-premium-analytics-post-detail-route",
+	"route": {
+		"path": "/post/$postId",
+		"page": "jetpack-premium-analytics"
+	}
+}

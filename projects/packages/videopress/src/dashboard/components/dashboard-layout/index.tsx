@@ -1,0 +1,89 @@
+/**
+ * External dependencies
+ */
+import AdminPage from '@automattic/jetpack-components/admin-page';
+import JitmSlot from '@automattic/jetpack-components/jitm-slot';
+import useConnectionErrorNotice, {
+	ConnectionError,
+} from '@automattic/jetpack-connection/use-connection-error-notice';
+import { useCallback } from '@wordpress/element';
+import { useNavigate } from '@wordpress/route';
+import { Stack, Tabs } from '@wordpress/ui';
+import { useUploadUnloadGuard } from '../../hooks/use-upload-unload-guard';
+import DashboardTabs, { TAB_PATHS, type DashboardTab } from '../dashboard-tabs';
+import OnboardingModal from '../onboarding-modal';
+import PageSubTitle from '../page-subtitle';
+import './style.scss';
+import type { ReactNode } from 'react';
+
+type Props = {
+	activeTab: DashboardTab;
+	children: ReactNode;
+	actions?: ReactNode;
+	hideFooter?: boolean;
+};
+
+const TAB_VALUES: DashboardTab[] = [ 'library', 'playlists', 'stats', 'settings' ];
+
+/**
+ * Shared chrome for every wp-build VideoPress dashboard tab. Renders
+ * `AdminPage` (with header + JetpackFooter) and a `Tabs.Root` containing
+ * the strip and one `Tabs.Panel` per tab so the `@wordpress/ui` Tabs
+ * Tab/Panel pairing validator stays happy. Tab navigation between
+ * sibling routes happens via `@wordpress/route`'s useNavigate. Also arms the
+ * beforeunload guard for in-flight uploads (Library, Overview, Settings);
+ * the video details and editor routes arm it themselves.
+ *
+ * @param props            - Component props.
+ * @param props.activeTab  - Currently active tab.
+ * @param props.children   - Active tab's body content.
+ * @param props.actions    - Optional content rendered in the page header's
+ *                         top-right actions slot (e.g. a Save button).
+ * @param props.hideFooter - When true, suppresses the JetpackFooter rendered by
+ *                         AdminPage. Used by DataViews-centric tabs (e.g. Library).
+ * @return The wrapped page element.
+ */
+export default function DashboardLayout( { activeTab, children, actions, hideFooter }: Props ) {
+	const navigate = useNavigate();
+	const { hasConnectionError } = useConnectionErrorNotice();
+	useUploadUnloadGuard();
+
+	const onValueChange = useCallback(
+		( next: string ) => {
+			const target = TAB_PATHS[ next as DashboardTab ];
+			if ( target ) {
+				navigate( { href: target } );
+			}
+		},
+		[ navigate ]
+	);
+
+	return (
+		<AdminPage
+			title={ 'VideoPress' /* product name; not translated */ }
+			subTitle={ <PageSubTitle /> }
+			actions={ actions }
+			showFooter={ ! hideFooter }
+		>
+			{ hasConnectionError && (
+				<Stack direction="column">
+					<ConnectionError trackingContext="videopress" />
+				</Stack>
+			) }
+			<Tabs.Root className="vp-dashboard-tabs" value={ activeTab } onValueChange={ onValueChange }>
+				<DashboardTabs />
+				<JitmSlot inset />
+				{ TAB_VALUES.map( tab => (
+					<Tabs.Panel key={ tab } value={ tab }>
+						{ activeTab === tab ? children : null }
+					</Tabs.Panel>
+				) ) }
+			</Tabs.Root>
+			{ /*
+			 * Rendered from the shared chrome rather than a route so the
+			 * first-run welcome greets the user on whichever tab they land on.
+			 */ }
+			<OnboardingModal />
+		</AdminPage>
+	);
+}

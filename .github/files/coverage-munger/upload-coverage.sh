@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+## Environment used by this script:
+#
+# Required:
+# - GITHUB_SHA: Commit SHA.
+# - PR_ID: PR number or "trunk".
+# - SECRET: Shared secret.
+# - COVERAGE_FAILED: Status of a failed coverage run, if any.
+# - For non-trunk runs, anything needed by post-message.sh
+
+set -eo pipefail
+
+if [[ ! -f coverage/summary.tsv ]]; then
+	echo 'No coverage was generated.'
+	exit 0
+fi
+
+# Don't update the trunk baseline with partial data if any coverage run failed.
+if [[ "$PR_ID" == "trunk" && -n "$COVERAGE_FAILED" ]]; then
+	echo "Not uploading trunk coverage data: a coverage run's status is '$COVERAGE_FAILED'."
+	exit 0
+fi
+
+mkdir coverage-data
+cp coverage/summary.tsv coverage-data/summary.tsv
+gzip -9 coverage-data/summary.tsv
+
+if compgen -G 'coverage/js-combined-*.json' &>/dev/null; then
+	echo '::group::Pnpm install'
+	pnpm install
+	echo '::endgroup::'
+
+	echo '::group::Generating JS coverage report'
+	.github/files/coverage-munger/node_modules/.bin/nyc report --no-exclude-after-remap --report-dir=coverage-data/js --temp-dir=coverage/ --reporter=html-spa
+	echo '::endgroup::'
+fi
+
+if compgen -G 'coverage/php-combined-*.cov' &>/dev/null; then
+	echo '::group::Composer install'
+	composer --working-dir=.github/files/coverage-munger/ update
+	echo '::endgroup::'
+
+	echo '::group::Generating PHP coverage report'
+
+	# We have to merge and re-relativize the paths, because `phpcov merge` keeps the raw (relative) paths from the first .cov file processed but then `realpath`s the paths in all the rest,
+	# and then gets confused when trying to find a common base directory. Sigh.
+	mkdir coverage-tmp
+	.github/files/coverage-munger/vendor/bin/phpcov merge --php coverage-tmp/merged.cov coverage/
+	perl -i -pwe 'BEGIN { $prefix = shift; $prefix=~s!/*$!/!; $re = qr/\Q$prefix\E/; $l = length( $prefix ); } s!s:(\d+):"$re! sprintf( qq(s:%d:"), $1 - $l ) !ge' "$GITHUB_WORKSPACE" coverage-tmp/merged.cov
+
+	.github/files/coverage-munger/vendor/bin/phpcov merge --html coverage-data/php coverage-tmp/
+	echo '::endgroup::'
+fi
+
+echo '::group::Creating zip file'
+zip -Xr9 coverage-data.zip coverage-data/
+echo '::endgroup::'
+
+echo '::group::Uploading zip file'
+# Because we don't know how big the zip is going to wind up being and have to upload via HTTP,
+# we created a simple chunked-upload protocol. This sends one command.
+#
+# $1 - Query parameters.
+# $2 - Chunk filename, if any.
+# $SECRET - Shared secret.
+#
+# Output:
+# JSON - JSON response. Also printed.
+function do_req {
+	local args=(
+		--header "Shared-Secret: $SECRET"
+		--url "https://jetpackcodecoverage.atomicsites.blog/upload-coverage-data.php?$1"
+	)
+	if [[ -n "$2" ]]; then
+		args+=( --form "chunk=@$2" )
+	fi
+
+	echo "=> $1"
+	if JSON=$( curl "${args[@]}" ) && jq -e '.ok == true' <<<"$JSON" &>/dev/null; then
+		jq . <<<"$JSON"
+		return 0
+	fi
+	echo "::error::Upload failed: ${JSON/$'\n'/%0A}"
+	return 1
+}
+
+SZ=$( stat -c %s coverage-data.zip )
+SHA=$( sha256sum coverage-data.zip )
+ID=$( jq --arg V "$PR_ID" -nr '$V | @uri' )
+COMMIT=$( jq --arg V "$GITHUB_SHA" -nr '$V | @uri' )
+do_req "op=begin&id=$ID&commit=$COMMIT&len=$SZ&sha=${SHA%% *}"
+TOKEN=$( jq -r '.token | @uri' <<<"$JSON" )
+CSZ=$( jq -r .chunkSize <<<"$JSON" )
+
+# Abort upload on exit
+function onexit {
+	if [[ -n "$TOKEN" ]]; then
+		do_req "op=abort&token=$TOKEN" || true
+		TOKEN=
+	fi
+}
+trap onexit exit
+
+for (( O=0; O < SZ; O+=CSZ )); do
+	dd if=coverage-data.zip of=chunk bs=32K skip="${O}B" count="${CSZ}B"
+	do_req "op=chunk&token=$TOKEN" chunk
+done
+
+do_req "op=finish&token=$TOKEN"
+TOKEN=
+echo '::endgroup::'
+
+if [[ "$PR_ID" != "trunk" ]]; then
+	# A failure may be stale from an earlier run attempt, since matrix outputs ignore empty values.
+	# Passing an empty string makes post-message.sh look up the latest status via the API.
+	COVERAGE_STATUS=$( [[ -n "$COVERAGE_FAILED" ]] || echo success ) COVINFO=$JSON .github/files/coverage-munger/post-message.sh
+fi

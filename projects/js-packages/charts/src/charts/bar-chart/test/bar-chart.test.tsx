@@ -1,0 +1,3794 @@
+import {
+	render,
+	renderHook,
+	screen,
+	within,
+	act,
+	waitFor,
+	fireEvent,
+} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { GlobalChartsProvider } from '../../../providers';
+import { useGlobalChartsContext } from '../../../providers/chart-context/hooks/use-global-charts-context';
+import { steadyTrafficData } from '../../../stories/sample-data';
+import { selectedBarRingBounds } from '../../../test-utils/selected-bar-ring';
+import BarChart, { BarChartUnresponsive } from '../bar-chart';
+import { useBarChartOptions } from '../private';
+import { useBarColors } from '../use-bar-colors';
+import type { GlobalChartsContextValue } from '../../../providers/chart-context/types';
+import type { DataPointDate, SeriesData } from '../../../types';
+import type { RenderTooltipParams } from '../../../visx/types';
+
+// Mock useElementSize to return non-zero dimensions in jsdom so charts render
+const mockRefCallback = jest.fn();
+jest.mock( '../../../hooks/use-element-size', () => ( {
+	useElementSize: () => [ mockRefCallback, 500, 300 ],
+} ) );
+
+const geometryOf = ( element: Element ) =>
+	[ 'x', 'y', 'width', 'height' ].map( name =>
+		Number( element.getAttribute( name ) ).toFixed( 2 )
+	);
+
+const selectedRingGeometry = () =>
+	Object.values( selectedBarRingBounds() ).map( value => value.toFixed( 2 ) );
+
+// eslint-disable-next-line testing-library/no-node-access -- visx renders the bars and takes no test id.
+const visxBars = () => document.querySelectorAll( '.visx-bar' );
+
+describe( 'BarChart', () => {
+	const defaultProps = {
+		width: 500,
+		height: 300,
+		data: [
+			{
+				label: 'Series A',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+					{ date: new Date( '2024-01-03' ), value: 30 },
+				],
+				options: {},
+			},
+		],
+	};
+
+	// visx renders bars and grid lines without accessible roles or configurable test IDs.
+	const getBarRects = () => {
+		// eslint-disable-next-line testing-library/no-node-access -- See the visx node constraint above.
+		return screen.getByRole( 'application' ).querySelectorAll( '.visx-bar-group rect' );
+	};
+
+	const getGridLines = () => {
+		// eslint-disable-next-line testing-library/no-node-access -- visx grid lines cannot receive test IDs.
+		return screen.getByRole( 'application' ).querySelectorAll( '.visx-rows line' );
+	};
+
+	const renderWithTheme = ( props = {}, children = undefined ) => {
+		return render(
+			<GlobalChartsProvider>
+				<BarChart { ...defaultProps } { ...props }>
+					{ children }
+				</BarChart>
+			</GlobalChartsProvider>
+		);
+	};
+
+	test.each(
+		[ 'vertical', 'horizontal' ].flatMap( orientation =>
+			[
+				[ 10, 20, 30 ],
+				[ -20, -10, -30 ],
+				[ -20, 10, 30 ],
+			].map( values => ( { orientation, values } ) )
+		)
+	)(
+		'adds datum classes without changing $orientation bar attributes for $values',
+		async ( { orientation, values } ) => {
+			const series = {
+				...defaultProps.data[ 0 ],
+				data: defaultProps.data[ 0 ].data.map( ( datum, index ) => ( {
+					...datum,
+					value: values[ index ],
+				} ) ),
+			};
+			const props = {
+				orientation,
+				data: [ series, { ...series, label: 'Series B' } ],
+			};
+			const view = renderWithTheme( props );
+			await waitFor( () => expect( getBarRects() ).toHaveLength( 6 ) );
+			const attributes = () =>
+				Array.from( getBarRects(), bar =>
+					[ 'x', 'y', 'width', 'height', 'fill', 'tabindex' ].map( attribute =>
+						bar.getAttribute( attribute )
+					)
+				);
+			const original = attributes();
+			view.unmount();
+			renderWithTheme( {
+				...props,
+				barClassName: ( datum: DataPointDate ) =>
+					datum.value === values[ 0 ] ? 'first-value' : undefined,
+			} );
+			await waitFor( () => expect( getBarRects() ).toHaveLength( 6 ) );
+			expect( attributes() ).toEqual( original );
+			expect( getBarRects()[ 0 ] ).toHaveClass( 'visx-bar', 'first-value' );
+			expect( getBarRects()[ 1 ] ).not.toHaveClass( 'first-value' );
+			expect( getBarRects()[ 3 ] ).toHaveClass( 'first-value' );
+		}
+	);
+
+	test( 'applies tooltip style overrides while keeping keyboard tooltip content', async () => {
+		const user = userEvent.setup();
+		renderWithTheme( {
+			withTooltips: true,
+			barClassName: () => 'styled-bar',
+			tooltipStyle: { padding: 0, backgroundColor: 'transparent', boxShadow: 'none' },
+		} );
+		await user.tab();
+		await user.keyboard( '{ArrowRight}' );
+		const tooltip = await screen.findByRole( 'tooltip' );
+		expect( tooltip ).toHaveTextContent( 'Jan 1' );
+		expect( screen.getByTestId( 'bounded-tooltip' ) ).toHaveStyle( {
+			padding: '0px',
+			// jsdom normalizes transparent in computed styles.
+			'background-color': 'rgba(0, 0, 0, 0)',
+			'box-shadow': 'none',
+		} );
+	} );
+
+	describe( 'pointer selection and focus return', () => {
+		const screenTransform = Object.getOwnPropertyDescriptor( SVGElement.prototype, 'getScreenCTM' );
+		beforeAll( () => {
+			// jsdom lacks the SVG transform used by visx to convert pointer coordinates.
+			Object.defineProperty( SVGElement.prototype, 'getScreenCTM', {
+				configurable: true,
+				value: () => null,
+			} );
+		} );
+
+		afterAll( () => {
+			if ( screenTransform ) {
+				Object.defineProperty( SVGElement.prototype, 'getScreenCTM', screenTransform );
+			} else {
+				Reflect.deleteProperty( SVGElement.prototype, 'getScreenCTM' );
+			}
+		} );
+
+		const barGeometry = () => {
+			const bars = getBarRects();
+			return Array.from( bars, bar =>
+				[ 'x', 'y', 'width', 'height' ].map( name => Number( bar.getAttribute( name ) ) )
+			);
+		};
+
+		const pointer = ( type: string, clientX: number, clientY: number ) => {
+			// visx owns the pointer capture rect and does not expose an attribute prop for it.
+			const chart = screen.getByRole( 'application' );
+			// eslint-disable-next-line testing-library/no-node-access
+			const target = chart.querySelector( 'svg > rect[fill="transparent"]' );
+			fireEvent( target, new MouseEvent( type, { bubbles: true, clientX, clientY } ) );
+		};
+
+		const hover = ( clientX: number, clientY: number ) =>
+			pointer( 'pointermove', clientX, clientY );
+
+		test( 'Escape returns focus to the chart without reopening either tooltip', async () => {
+			jest.useFakeTimers();
+			try {
+				const user = userEvent.setup( { advanceTimers: jest.advanceTimersByTime } );
+				renderWithTheme( { withTooltips: true } );
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				await user.tab();
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				await user.keyboard( '{Escape}' );
+				await act( async () => {
+					jest.advanceTimersByTime( 5000 );
+				} );
+				expect( chart ).toHaveFocus();
+				expect( screen.queryByTestId( /^chart-tooltip-\d+$/ ) ).not.toBeInTheDocument();
+				expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+			} finally {
+				jest.useRealTimers();
+			}
+		} );
+
+		// The pointer never moves, so visx never fires the leave that would normally close this.
+		test( 'closes a hover tooltip when the series it describes is hidden', async () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChart { ...defaultProps } withTooltips chartId="test-hover-then-hide" />
+				</GlobalChartsProvider>
+			);
+
+			const [ [ x0, , width ] ] = barGeometry();
+			hover( x0 + width / 2, 150 );
+			await expect( screen.findByRole( 'tooltip' ) ).resolves.toHaveTextContent( 'Jan 1' );
+
+			act( () => context.toggleSeriesVisibility( 'test-hover-then-hide', 'Series A' ) );
+
+			expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'keeps band correction after BarGroup subscriptions on mount and rerender', async () => {
+			const chart = ( className: string ) => (
+				<GlobalChartsProvider>
+					<BarChart { ...defaultProps } withTooltips className={ className } />
+				</GlobalChartsProvider>
+			);
+			const { rerender } = render( chart( 'before' ) );
+			const [ [ x0, , width ], [ x1 ] ] = barGeometry();
+			const clientX = ( x0 + width / 2 + x1 + width / 2 ) / 2 - 2;
+			hover( clientX, 150 );
+			await expect( screen.findByRole( 'tooltip' ) ).resolves.toHaveTextContent( 'Jan 1' );
+			rerender( chart( 'after' ) );
+			hover( x1 + width / 2, 150 );
+			await waitFor( () => expect( screen.getByRole( 'tooltip' ) ).toHaveTextContent( 'Jan 2' ) );
+			hover( clientX, 150 );
+			await waitFor( () => expect( screen.getByRole( 'tooltip' ) ).toHaveTextContent( 'Jan 1' ) );
+		} );
+
+		test( 'clears the highlight callback when the pointer leaves the plot', async () => {
+			const onBandHighlightChange = jest.fn();
+			renderWithTheme( { withTooltips: true, withBandHighlight: true, onBandHighlightChange } );
+			const [ [ x, , width ] ] = barGeometry();
+			hover( x + width / 2, 150 );
+			await expect(
+				screen.findByTestId( 'bar-chart-band-highlight' )
+			).resolves.toBeInTheDocument();
+			pointer( 'pointerout', x + width / 2, 150 );
+			await waitFor( () => expect( onBandHighlightChange ).toHaveBeenLastCalledWith( null ) );
+			expect( screen.queryByTestId( 'bar-chart-band-highlight' ) ).not.toBeInTheDocument();
+		} );
+
+		test.each( [ 'comparison', 'hidden' ] )(
+			'selects the visible primary band with a %s series',
+			async mode => {
+				const onBandHighlightChange = jest.fn();
+				const onPointerUp = jest.fn();
+				renderWithTheme( {
+					withTooltips: true,
+					withBandHighlight: true,
+					onBandHighlightChange,
+					onPointerUp,
+					defaultHiddenSeries: mode === 'hidden' ? [ 'Other' ] : [],
+					data: [
+						{ ...defaultProps.data[ 0 ], group: 'scores' },
+						{
+							label: 'Other',
+							group: 'scores',
+							options: mode === 'comparison' ? { type: 'comparison' } : {},
+							data: defaultProps.data[ 0 ].data,
+						},
+					],
+				} );
+				const [ [ x, , width ] ] = barGeometry();
+				hover( x + width / 2, 150 );
+				const highlight = await screen.findByTestId( 'bar-chart-band-highlight' );
+				const otherSlot =
+					Number( highlight.getAttribute( 'x' ) ) +
+					Number( highlight.getAttribute( 'width' ) ) * 0.85;
+				hover( otherSlot, 150 );
+				pointer( 'pointerup', otherSlot, 150 );
+				for ( const callback of [ onBandHighlightChange, onPointerUp ] ) {
+					expect( callback ).not.toHaveBeenCalledWith(
+						expect.objectContaining( { key: 'Other' } )
+					);
+					expect( callback ).toHaveBeenLastCalledWith(
+						expect.objectContaining( {
+							key: 'Series A',
+							index: 0,
+							datum: defaultProps.data[ 0 ].data[ 0 ],
+						} )
+					);
+				}
+			}
+		);
+
+		test( 'reports the tooltip datum when pressing and releasing in a padded gap', async () => {
+			const onPointerDown = jest.fn();
+			const onPointerUp = jest.fn();
+			renderWithTheme( { withTooltips: true, onPointerDown, onPointerUp } );
+			const [ [ x0, , width ], [ x1 ] ] = barGeometry();
+			const clientX = ( x0 + width / 2 + x1 + width / 2 ) / 2 - 2;
+			hover( clientX, 150 );
+			await expect( screen.findByRole( 'tooltip' ) ).resolves.toHaveTextContent( 'Jan 1' );
+			pointer( 'pointerdown', clientX, 150 );
+			pointer( 'pointerup', clientX, 150 );
+			for ( const callback of [ onPointerDown, onPointerUp ] ) {
+				expect( callback ).toHaveBeenCalledTimes( 1 );
+				expect( callback ).toHaveBeenLastCalledWith(
+					expect.objectContaining( {
+						key: 'Series A',
+						index: 0,
+						datum: defaultProps.data[ 0 ].data[ 0 ],
+					} )
+				);
+			}
+		} );
+
+		test( 'selects the painted grouped bar at the outer edge of a padded band', async () => {
+			renderWithTheme( {
+				withTooltips: true,
+				data: [ 'A', 'B', 'C' ].map( label => ( {
+					label,
+					data: [
+						{ label: 'Jan 1', value: 50 },
+						{ label: 'Jan 2', value: 50 },
+						{ label: 'Jan 3', value: 50 },
+					],
+				} ) ),
+			} );
+			const [ x, y, width, height ] = barGeometry()[ 6 ];
+			hover( x + width - 1, y + height / 2 );
+			await expect( screen.findByRole( 'tooltip' ) ).resolves.toHaveTextContent( 'Jan 1' );
+		} );
+
+		test.each( [ 'vertical', 'horizontal' ] )(
+			'selects the long grouped bar near its base in a %s chart',
+			async orientation => {
+				renderWithTheme( {
+					withTooltips: true,
+					orientation,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ label: 'Jan 1', value: 100 },
+								{ label: 'Jan 2', value: 100 },
+							],
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ label: 'Jan 1', value: 10 },
+								{ label: 'Jan 2', value: 10 },
+							],
+						},
+					],
+				} );
+				const [ [ x, y, width, height ] ] = barGeometry();
+				hover(
+					orientation === 'horizontal' ? x + 2 : x + width / 2,
+					orientation === 'horizontal' ? y + height / 2 : y + height - 2
+				);
+				await expect( screen.findByRole( 'tooltip' ) ).resolves.toHaveTextContent( 'Series A' );
+			}
+		);
+	} );
+
+	test( 'warns once when highlight options lack tooltips across callback changes and remounts', () => {
+		const warn = jest.spyOn( console, 'warn' ).mockImplementation( () => {} );
+		try {
+			const onBandHighlightChange = jest.fn();
+			const { rerender, unmount } = renderWithTheme( {
+				withBandHighlight: true,
+				onBandHighlightChange,
+			} );
+			for ( let i = 0; i < 4; i++ ) {
+				rerender(
+					<GlobalChartsProvider>
+						<BarChart { ...defaultProps } withBandHighlight onBandHighlightChange={ jest.fn() } />
+					</GlobalChartsProvider>
+				);
+			}
+			unmount();
+			renderWithTheme( { withBandHighlight: true, onBandHighlightChange } );
+			expect( warn ).toHaveBeenCalledTimes( 1 );
+			expect( screen.getByRole( 'application' ) ).toBeInTheDocument();
+			expect( warn ).toHaveBeenCalledWith(
+				'[Charts] BarChart: withBandHighlight and onBandHighlightChange require withTooltips.'
+			);
+			expect( onBandHighlightChange ).not.toHaveBeenCalled();
+			expect( screen.queryByTestId( 'bar-chart-band-highlight' ) ).not.toBeInTheDocument();
+		} finally {
+			warn.mockRestore();
+		}
+	} );
+
+	test( 'reports band bounds and point indexes during keyboard navigation and clears them on Escape', async () => {
+		const user = userEvent.setup();
+		const onBandHighlightChange = jest.fn();
+		renderWithTheme( { withTooltips: true, onBandHighlightChange } );
+		await user.tab();
+		await user.keyboard( '{ArrowRight}' );
+		expect( onBandHighlightChange ).toHaveBeenLastCalledWith(
+			expect.objectContaining( {
+				datum: expect.objectContaining( { value: 10 } ),
+				key: 'Series A',
+				index: 0,
+				x: expect.any( Number ),
+				y: expect.any( Number ),
+				width: expect.any( Number ),
+				height: expect.any( Number ),
+			} )
+		);
+		expect( screen.queryByTestId( 'bar-chart-band-highlight' ) ).not.toBeInTheDocument();
+		await user.keyboard( '{ArrowRight}' );
+		expect( onBandHighlightChange ).toHaveBeenLastCalledWith(
+			expect.objectContaining( {
+				datum: expect.objectContaining( { value: 20 } ),
+				key: 'Series A',
+				index: 1,
+			} )
+		);
+		await user.keyboard( '{Escape}' );
+		await waitFor( () => expect( onBandHighlightChange ).toHaveBeenLastCalledWith( null ) );
+	} );
+
+	test.each( [ 'vertical', 'horizontal' ] )(
+		'draws the active band across a %s plot',
+		async orientation => {
+			const user = userEvent.setup();
+			const onBandHighlightChange = jest.fn();
+			renderWithTheme( {
+				withTooltips: true,
+				withBandHighlight: true,
+				orientation,
+				onBandHighlightChange,
+			} );
+			await user.tab();
+			await user.keyboard( '{ArrowRight}' );
+			const highlight = screen.getByTestId( 'bar-chart-band-highlight' );
+			expect( highlight.matches( 'svg > :first-child' ) ).toBe( true );
+			const bounds = onBandHighlightChange.mock.calls.at( -1 )[ 0 ];
+			expect( Number( highlight.getAttribute( 'width' ) ) ).toBe( bounds.width );
+			expect( Number( highlight.getAttribute( 'height' ) ) ).toBe( bounds.height );
+			expect( bounds.width ).toBeGreaterThan( 0 );
+			expect( bounds.height ).toBeGreaterThan( 0 );
+			const bar = getBarRects()[ 0 ];
+			const bandAxis = orientation === 'vertical' ? 'x' : 'y';
+			const bandSize = orientation === 'vertical' ? 'width' : 'height';
+			const plotSize = orientation === 'vertical' ? 'height' : 'width';
+			const barStart = Number( bar.getAttribute( bandAxis ) );
+			const barSize = Number( bar.getAttribute( bandSize ) );
+			expect( Number( highlight.getAttribute( bandAxis ) ) ).toBeLessThanOrEqual( barStart );
+			expect(
+				Number( highlight.getAttribute( bandAxis ) ) + Number( highlight.getAttribute( bandSize ) )
+			).toBeGreaterThanOrEqual( barStart + barSize );
+			expect( Number( highlight.getAttribute( bandSize ) ) ).toBeLessThan( barSize * 2 );
+			expect( Number( highlight.getAttribute( plotSize ) ) ).toBeGreaterThan(
+				Number( bar.getAttribute( plotSize ) )
+			);
+		}
+	);
+
+	test( 'aligns horizontal grid lines with explicit value ticks', () => {
+		renderWithTheme( {
+			gridVisibility: 'x',
+			options: {
+				axis: { y: { tickValues: [ 0, 50, 100 ] } },
+				scale: { y: { domain: [ 0, 100 ] } },
+			},
+		} );
+		const lines = getGridLines();
+		expect( lines ).toHaveLength( 3 );
+	} );
+
+	describe( 'Whole-number value ticks', () => {
+		const wholeNumberData: SeriesData[] = [
+			{
+				label: 'Series A',
+				data: [
+					{ label: 'Mon', value: 0 },
+					{ label: 'Tue', value: 1 },
+					{ label: 'Wed', value: 1 },
+				],
+			},
+		];
+
+		test( 'labels a whole-number range smaller than the tick count once per whole number', () => {
+			renderWithTheme( { data: wholeNumberData } );
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0', '1' ] );
+		} );
+
+		test( 'labels a horizontal whole-number range once per whole number', () => {
+			renderWithTheme( { data: wholeNumberData, orientation: 'horizontal' } );
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0', '1' ] );
+		} );
+
+		test( 'draws a flat series of ones on a 0 and 1 axis', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ label: 'Mon', value: 1 },
+							{ label: 'Tue', value: 1 },
+						],
+					},
+				],
+			} );
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0', '1' ] );
+		} );
+
+		test.each( [ 'vertical', 'horizontal' ] as const )(
+			'keeps every tick on a value domain the caller pinned (%s)',
+			orientation => {
+				const valueAxis = orientation === 'horizontal' ? 'x' : 'y';
+				renderWithTheme( {
+					orientation,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ label: 'Mon', value: 0 },
+								{ label: 'Tue', value: 0 },
+							],
+						},
+					],
+					options: {
+						[ `${ valueAxis }Scale` ]: { domain: [ 0, 1 ] },
+						axis: {
+							[ valueAxis ]: { tickFormat: ( value: number ) => `${ Math.round( value * 100 ) }%` },
+						},
+					},
+				} );
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				expect( within( chart ).getAllByText( /^\d+%$/ ) ).toHaveLength( 6 );
+			}
+		);
+
+		test.each( [
+			[ 'small amounts', 0, [ 0.4, 1.2, 2.6 ], [ '0', '1', '2' ] ],
+			[ 'amounts under one step', 0, [ 0.31, 0.73 ], [ '0', '1' ] ],
+			[ 'cents', 2, [ 0.4, 1.2, 1.6 ], [ '0.00', '0.50', '1.00', '1.50' ] ],
+		] )( 'holds value ticks to tickDecimals for %s', ( _, tickDecimals, values, expected ) => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: values.map( ( value, i ) => ( { label: `Day ${ i }`, value } ) ),
+					},
+				],
+				options: {
+					axis: {
+						y: { tickDecimals, tickFormat: ( value: number ) => value.toFixed( tickDecimals ) },
+					},
+				},
+			} );
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( expected );
+		} );
+
+		test.each( [ 'vertical', 'horizontal' ] as const )(
+			'keeps logarithmic bars unchanged by tickDecimals (%s)',
+			orientation => {
+				const valueAxis = orientation === 'horizontal' ? 'x' : 'y';
+				const barGeometry = ( tickDecimals?: number ) => {
+					const { unmount } = renderWithTheme( {
+						orientation,
+						data: [
+							{
+								label: 'Series A',
+								data: [ 0.31, 0.73 ].map( ( value, i ) => ( { label: `Day ${ i }`, value } ) ),
+							},
+						],
+						options: {
+							[ `${ valueAxis }Scale` ]: { type: 'log', zero: false },
+							axis: { [ valueAxis ]: { tickDecimals } },
+						},
+					} );
+					const geometry = Array.from( getBarRects(), geometryOf );
+					unmount();
+					return geometry;
+				};
+
+				const baseline = barGeometry();
+				expect( baseline ).toHaveLength( 2 );
+				expect( barGeometry( 0 ) ).toEqual( baseline );
+			}
+		);
+
+		test( "leaves a caller's value tickValues axis unwidened by tickDecimals", () => {
+			const barHeights = ( y: { tickValues: number[]; tickDecimals?: number } ) => {
+				const { unmount } = renderWithTheme( {
+					data: [
+						{
+							label: 'Series A',
+							data: [ 0.31, 0.73 ].map( ( value, i ) => ( { label: `Day ${ i }`, value } ) ),
+						},
+					],
+					options: { yScale: { zero: false }, axis: { y } },
+				} );
+				const heights = Array.from( getBarRects(), rect => rect.getAttribute( 'height' ) );
+				unmount();
+				return heights;
+			};
+
+			expect( barHeights( { tickValues: [ 0.4, 0.6 ], tickDecimals: 0 } ) ).toEqual(
+				barHeights( { tickValues: [ 0.4, 0.6 ] } )
+			);
+		} );
+
+		test( "keeps a caller's value tickValues", () => {
+			renderWithTheme( {
+				data: wholeNumberData,
+				options: { axis: { y: { tickValues: [ 0, 0.5, 1 ] } } },
+			} );
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			expect( within( chart ).getAllByText( /^-?[\d.,]+$/ ) ).toHaveLength( 3 );
+		} );
+	} );
+
+	test( 'draws category grid lines at the x axis numTicks', () => {
+		const data: SeriesData[] = [
+			{
+				label: 'Series A',
+				data: Array.from( { length: 30 }, ( _, i ) => ( { label: `Day ${ i + 1 }`, value: i } ) ),
+			},
+		];
+		const countColumns = ( numTicks: number ) => {
+			const { container, unmount } = renderWithTheme( {
+				data,
+				gridVisibility: 'y',
+				options: { axis: { x: { numTicks } } },
+			} );
+			// See the visx node constraint at getBarRects.
+			// eslint-disable-next-line testing-library/no-container, testing-library/no-node-access
+			const count = container.querySelectorAll( '.visx-columns line' ).length;
+			unmount();
+			return count;
+		};
+
+		expect( countColumns( 15 ) ).toBeGreaterThan( countColumns( 4 ) );
+	} );
+
+	describe( 'Data Validation', () => {
+		test( 'handles empty data array', () => {
+			renderWithTheme( { data: [] } );
+			expect( screen.getByText( /no data available/i ) ).toBeInTheDocument();
+		} );
+
+		test( 'handles single data point', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'handles negative values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: -10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: -20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders a bucket with no reading instead of failing the whole chart', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.queryByText( /invalid data/i ) ).not.toBeInTheDocument();
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'draws no bar for a bucket with no reading', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							{ date: new Date( '2024-01-03' ), value: 30, label: 'Jan 3' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( getBarRects() ).toHaveLength( 2 );
+		} );
+
+		test( 'still rejects undefined values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{
+								date: new Date( '2024-01-01' ),
+								value: undefined as number | undefined,
+								label: 'Jan 1',
+							},
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.getByText( /invalid data/i ) ).toBeInTheDocument();
+		} );
+
+		test( 'handles invalid date values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( 'invalid' ), value: 10 },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.getByText( /invalid data/i ) ).toBeInTheDocument();
+		} );
+
+		test( 'handles invalid label values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ label: '', value: 10 }, // Empty label
+							{ label: 'Label 2', value: 20 },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( screen.getByText( /invalid data/i ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Legend', () => {
+		const multiSeriesData = [
+			{
+				label: 'Series A',
+				data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+				options: {},
+			},
+			{
+				label: 'Series B',
+				data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+				options: {},
+			},
+		];
+
+		test( 'shows legend when showLegend is true', () => {
+			renderWithTheme( { showLegend: true, data: multiSeriesData } );
+			expect( screen.getByText( 'Series A' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Series B' ) ).toBeInTheDocument();
+		} );
+
+		test( 'hides legend when showLegend is false', () => {
+			renderWithTheme( { showLegend: false, data: multiSeriesData } );
+			expect( screen.queryByText( 'Series A' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders composition legend as child component', () => {
+			renderWithTheme( { data: multiSeriesData }, <BarChart.Legend /> );
+
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+			expect( screen.getByText( 'Series A' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Series B' ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders composition legend regardless of showLegend value', () => {
+			renderWithTheme( { data: multiSeriesData, showLegend: false }, <BarChart.Legend /> );
+
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+		} );
+
+		test( 'renders composition legend in top position', () => {
+			renderWithTheme( { data: multiSeriesData }, <BarChart.Legend position="top" /> );
+
+			// Legend should appear before the chart content in DOM order
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+			const html = document.body.innerHTML;
+			expect( html.indexOf( 'data-testid="legend-horizontal"' ) ).toBeLessThan(
+				html.indexOf( 'role="application"' )
+			);
+		} );
+	} );
+
+	describe( 'Grid tick counts', () => {
+		const getPositions = ( selector: string, coordinate: string ) => {
+			// eslint-disable-next-line testing-library/no-node-access -- See the visx node constraint above.
+			const lines = screen.getByRole( 'application' ).querySelectorAll( selector );
+			return Array.from( lines, line => Number( line.getAttribute( coordinate ) ) );
+		};
+
+		test.each( [ 'x', 'y' ] )( 'aligns an explicit tick count with the %s axis', axis => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Views',
+						data: Array.from( { length: 8 }, ( _, index ) => ( {
+							label: `Day ${ index + 1 }`,
+							value: ( index + 1 ) * 10,
+						} ) ),
+					},
+				],
+				gridVisibility: 'xy',
+				options: {
+					axis: { [ axis ]: { numTicks: 2, tickFormat: String, axisClassName: 'test-value-axis' } },
+				},
+			} );
+			const grid = getPositions(
+				axis === 'x' ? '.visx-columns line' : '.visx-rows line',
+				`${ axis }1`
+			);
+			const ticks = getPositions( '.test-value-axis .visx-axis-tick line', `${ axis }1` );
+			expect( ticks.length ).toBeGreaterThan( 0 );
+			expect( grid ).toEqual( ticks );
+		} );
+
+		test.each( [ false, true ] )(
+			'preserves the default tick count (horizontal=%s)',
+			horizontal => {
+				const axis = horizontal ? 'x' : 'y';
+				const positionsFor = ( axisOptions: object ) => {
+					const { unmount } = renderWithTheme( {
+						orientation: horizontal ? 'horizontal' : 'vertical',
+						gridVisibility: 'xy',
+						options: {
+							axis: { [ axis ]: { axisClassName: 'test-value-axis', ...axisOptions } },
+						},
+					} );
+					const positions = {
+						grid: getPositions(
+							horizontal ? '.visx-columns line' : '.visx-rows line',
+							`${ axis }1`
+						),
+						ticks: getPositions( '.test-value-axis .visx-axis-tick line', `${ axis }1` ),
+					};
+					unmount();
+					return positions;
+				};
+
+				const omitted = positionsFor( {} );
+				const explicit = positionsFor( { numTicks: 4 } );
+
+				expect( omitted.ticks.length ).toBeGreaterThan( 0 );
+				expect( omitted.grid ).toEqual( omitted.ticks );
+				expect( omitted.grid ).toEqual( explicit.grid );
+			}
+		);
+	} );
+
+	describe( 'Axis display', () => {
+		test.each( [
+			[ 'vertical', 'x', 'y' ],
+			[ 'vertical', 'y', 'x' ],
+			[ 'horizontal', 'x', 'y' ],
+			[ 'horizontal', 'y', 'x' ],
+		] )( 'skips a hidden axis (%s, hidden %s)', ( orientation, hidden, shown ) => {
+			renderWithTheme( {
+				orientation,
+				options: {
+					axis: {
+						[ hidden ]: { display: false, axisClassName: 'test-hidden-axis' },
+						[ shown ]: { axisClassName: 'test-shown-axis' },
+					},
+				},
+			} );
+			const chart = screen.getByRole( 'application' );
+
+			// eslint-disable-next-line testing-library/no-node-access -- See the visx node constraint above.
+			expect( chart.querySelector( '.test-hidden-axis' ) ).toBeNull();
+			// eslint-disable-next-line testing-library/no-node-access -- See the visx node constraint above.
+			expect( chart.querySelector( '.test-shown-axis' ) ).not.toBeNull();
+		} );
+	} );
+
+	describe( 'Grid Visibility', () => {
+		test( 'renders with different grid visibility options', () => {
+			const { rerender } = renderWithTheme( { gridVisibility: 'x' } );
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+
+			rerender(
+				<GlobalChartsProvider>
+					<BarChart { ...defaultProps } gridVisibility="y" />
+				</GlobalChartsProvider>
+			);
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+
+			rerender(
+				<GlobalChartsProvider>
+					<BarChart { ...defaultProps } gridVisibility="xy" />
+				</GlobalChartsProvider>
+			);
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Custom tickFormat', () => {
+		test( 'renders with custom tickFormat', () => {
+			renderWithTheme( {
+				options: {
+					axis: {
+						x: {
+							tickFormat: ( timestamp: number ) => {
+								const date = new Date( timestamp );
+								return date.toLocaleDateString( 'en-US', { dateStyle: 'short' } );
+							},
+						},
+					},
+				},
+			} );
+
+			// Query for tspan elements that contain the formatted date.
+			const tspansWithDate = screen.getAllByText( '1/3/24' );
+			expect( tspansWithDate.length ).toBeGreaterThan( 0 );
+		} );
+	} );
+
+	describe( 'Bar chart options memoization', () => {
+		const stableData: SeriesData[] = [
+			{
+				label: 'Views',
+				data: [
+					{ date: new Date( 2026, 0, 1 ), value: 1 },
+					{ date: new Date( 2026, 0, 2 ), value: 2 },
+				],
+				options: {},
+			},
+		];
+
+		test( 'returns the same options when the caller passes an equal object literal', () => {
+			// The literal is rebuilt on every render, so only a deep comparison can
+			// keep the memos below it from recomputing.
+			const { result, rerender } = renderHook( () =>
+				useBarChartOptions( stableData, false, { axis: { x: { numTicks: 6 } } } )
+			);
+			const first = result.current;
+
+			rerender();
+
+			expect( result.current ).toBe( first );
+		} );
+
+		test( 'still recomputes when the options actually change', () => {
+			const { result, rerender } = renderHook(
+				( { numTicks }: { numTicks: number } ) =>
+					useBarChartOptions( stableData, false, { axis: { x: { numTicks } } } ),
+				{ initialProps: { numTicks: 6 } }
+			);
+			const first = result.current;
+
+			rerender( { numTicks: 3 } );
+
+			expect( result.current ).not.toBe( first );
+			expect( result.current.axis.x.numTicks ).toBe( 3 );
+		} );
+
+		test( 'returns the same options when nothing changed and no options were passed', () => {
+			const { result, rerender } = renderHook( () => useBarChartOptions( stableData, false ) );
+			const first = result.current;
+
+			rerender();
+
+			expect( result.current ).toBe( first );
+		} );
+	} );
+
+	describe( 'Band domain', () => {
+		const dated = ( year: number, month: number, day: number, value: number ) => ( {
+			date: new Date( year, month, day ),
+			value,
+		} );
+
+		// Scoped to the chart: @visx/text parks a measuring node on document.body,
+		// which a negative assertion would otherwise match.
+		const inChart = () => within( screen.getByRole( 'application', { name: /bar chart/i } ) );
+
+		test( 'leaves tick values alone when a bucket is labelled rather than dated', () => {
+			// visx builds the band domain from `label || date`, so a labelled bucket
+			// is not a `Date` on the axis at all. Choosing `Date` tick values for a
+			// domain like that puts a tick on a key `scaleBand` does not hold.
+			const { result } = renderHook( () =>
+				useBarChartOptions(
+					[
+						{
+							label: 'Views',
+							data: [
+								dated( 2026, 0, 1, 1 ),
+								{ ...dated( 2026, 0, 2, 2 ), label: 'Launch day' },
+								dated( 2026, 0, 3, 3 ),
+							],
+							options: {},
+						},
+					],
+					false
+				)
+			);
+
+			expect( result.current.axis.x.tickValues ).toBeUndefined();
+		} );
+
+		test( 'labels a bucket that carries a label, on an otherwise dated axis', () => {
+			// `hasLabels` samples only the first point, so this axis keeps the time
+			// formatter; the labelled bucket still has to render as itself rather
+			// than as a date parsed out of its label.
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Views',
+						data: [
+							dated( 2026, 0, 1, 1 ),
+							{ ...dated( 2026, 0, 2, 2 ), label: 'Launch day' },
+							dated( 2026, 0, 3, 3 ),
+						],
+						options: {},
+					},
+				],
+			} );
+
+			expect( inChart().getByText( 'Launch day' ) ).toBeInTheDocument();
+			expect( inChart().queryByText( /Invalid Date/ ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'ignores comparison series, which visx never puts on the band scale', () => {
+			// A comparison series carrying its own dates is a misuse the chart already
+			// warns about; the point here is that it does not also break the axis.
+			const warn = jest.spyOn( console, 'warn' ).mockImplementation( () => {} );
+
+			try {
+				renderWithTheme( {
+					data: [
+						{
+							label: 'This period',
+							data: [ dated( 2026, 0, 1, 1 ), dated( 2026, 0, 4, 2 ) ],
+							options: {},
+						},
+						{
+							label: 'Prior period',
+							data: [ dated( 2025, 11, 26, 1 ), dated( 2025, 11, 29, 2 ) ],
+							options: { type: 'comparison' },
+						},
+					],
+				} );
+
+				expect( inChart().queryByText( 'Dec 26' ) ).not.toBeInTheDocument();
+				expect( inChart().queryByText( 'Dec 29' ) ).not.toBeInTheDocument();
+				expect( inChart().getByText( 'Jan 1' ) ).toBeInTheDocument();
+			} finally {
+				warn.mockRestore();
+			}
+		} );
+
+		test( 'drops the buckets of a series the legend has hidden', async () => {
+			const user = userEvent.setup();
+			renderWithTheme( {
+				chartId: 'hidden-series',
+				showLegend: true,
+				legend: { interactive: true },
+				data: [
+					{
+						label: 'Long',
+						data: [
+							dated( 2026, 0, 1, 1 ),
+							dated( 2026, 0, 3, 2 ),
+							dated( 2026, 0, 5, 3 ),
+							dated( 2026, 0, 7, 4 ),
+						],
+						options: {},
+					},
+					{
+						label: 'Short',
+						data: [ dated( 2026, 0, 1, 5 ), dated( 2026, 0, 3, 6 ) ],
+						options: {},
+					},
+				],
+			} );
+
+			await user.click( screen.getByText( 'Long' ) );
+
+			expect( inChart().queryByText( 'Jan 5' ) ).not.toBeInTheDocument();
+			expect( inChart().queryByText( 'Jan 7' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'labels a bucket that carries a label in the tooltip too', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions(
+					[
+						{
+							label: 'Views',
+							data: [ dated( 2026, 0, 1, 1 ), { ...dated( 2026, 0, 2, 2 ), label: 'Launch day' } ],
+							options: {},
+						},
+					],
+					false
+				)
+			);
+
+			// visx calls a tick formatter with (value, index, values).
+			const format = result.current.tooltip.labelFormatter;
+			expect( format( 'Launch day', 0, [] ) ).toBe( 'Launch day' );
+			expect( format( new Date( 2026, 0, 1 ), 0, [] ) ).toMatch( /2026/ );
+		} );
+
+		test( 'keeps only the later of two series sharing a label, as the registry does', () => {
+			const warn = jest.spyOn( console, 'error' ).mockImplementation( () => {} );
+
+			try {
+				const { result } = renderHook( () =>
+					useBarChartOptions(
+						[
+							{ label: 'Dup', data: [ dated( 2026, 0, 1, 1 ) ], options: {} },
+							{ label: 'Dup', data: [ dated( 2026, 0, 5, 2 ) ], options: {} },
+						],
+						false
+					)
+				);
+
+				expect( result.current.axis.x.tickValues ).toEqual( [ new Date( 2026, 0, 5 ) ] );
+			} finally {
+				warn.mockRestore();
+			}
+		} );
+
+		test( 'puts the band tick values on the y axis when horizontal', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions(
+					[
+						{
+							label: 'Views',
+							data: [ dated( 2026, 0, 1, 1 ), dated( 2026, 0, 2, 2 ) ],
+							options: {},
+						},
+					],
+					true
+				)
+			);
+
+			expect( result.current.axis.y.tickValues ).toEqual( [
+				new Date( 2026, 0, 1 ),
+				new Date( 2026, 0, 2 ),
+			] );
+			expect( result.current.axis.x.tickValues ).toBeUndefined();
+		} );
+
+		test( 'keeps every dated bucket across series, in the order visx concatenates them', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions(
+					[
+						{
+							label: 'A',
+							data: [ dated( 2026, 0, 1, 1 ), dated( 2026, 0, 3, 3 ) ],
+							options: {},
+						},
+						{
+							label: 'B',
+							data: [ dated( 2026, 0, 1, 4 ), dated( 2026, 0, 2, 5 ) ],
+							options: {},
+						},
+					],
+					false
+				)
+			);
+
+			expect( result.current.axis.x.tickValues ).toEqual( [
+				new Date( 2026, 0, 1 ),
+				new Date( 2026, 0, 3 ),
+				new Date( 2026, 0, 2 ),
+			] );
+		} );
+	} );
+
+	describe( 'Time axis ticks', () => {
+		const distinctTexts = ( elements: HTMLElement[] ) =>
+			new Set( elements.map( el => el.textContent ) );
+
+		// @visx/text measures label widths through one reusable <text> node parked
+		// on document.body, which outlives RTL's cleanup still holding the last
+		// string measured. Query inside the chart so a previous test's measurement
+		// can't answer for this one's axis.
+		const inChart = () => within( screen.getByRole( 'application', { name: /bar chart/i } ) );
+
+		test( 'renders distinct date ticks for daily buckets within a year', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 14 }, ( _, i ) => ( {
+							date: new Date( 2024, 0, 1 + i ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText(
+				/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d+$/
+			);
+			expect( distinctTexts( ticks ).size ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'keeps the derived date formatter when tickFormat is passed as undefined', () => {
+			renderWithTheme( {
+				width: 800,
+				options: { axis: { x: { tickFormat: undefined } } },
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 14 }, ( _, i ) => ( {
+							date: new Date( 2024, 0, 1 + i ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^Jan \d+$/ );
+			expect( distinctTexts( ticks ).size ).toBeGreaterThan( 1 );
+			// A clobbered formatter falls back to raw `Date.toString()` ticks.
+			expect( screen.queryByText( /GMT/ ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders distinct hour ticks for sub-daily buckets in a single day', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 12 }, ( _, i ) => ( {
+							date: new Date( 2024, 0, 1, i ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^\d{1,2}\s(AM|PM)$/ );
+			expect( distinctTexts( ticks ).size ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'renders date ticks, not hour ticks, for a two-point daily series', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( 2024, 0, 1 ), value: 10 },
+							{ date: new Date( 2024, 0, 2 ), value: 20 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			expect( screen.getByText( 'Jan 1' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Jan 2' ) ).toBeInTheDocument();
+			expect( screen.queryByText( /12\sAM/ ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders distinct year ticks for series spanning multiple years', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 4 }, ( _, i ) => ( {
+							date: new Date( 2021 + i, 0, 1 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^\d{4}$/ );
+			expect( distinctTexts( ticks ).size ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'renders date ticks for daily buckets whose gaps shrink to 23 hours', () => {
+			// The gaps are built at 23 hours rather than dated across a real
+			// spring-forward, because the suite pins TZ=UTC and so has no DST to
+			// straddle. A strict 24h rule would read these as sub-daily buckets and
+			// label them by the hour.
+			const start = new Date( 2026, 2, 8 );
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 23, 46 ].map( ( offsetHours, i ) => ( {
+							date: new Date( start.getTime() + offsetHours * 60 * 60 * 1000 ),
+							value: 10 * ( i + 1 ),
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			expect( screen.getAllByText( /^Mar \d+$/ ).length ).toBeGreaterThan( 0 );
+			expect( screen.queryByText( /\d{1,2}\s(AM|PM)/ ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'dates a midnight tick for sub-daily buckets spanning days', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 48 }, ( _, i ) => ( {
+							date: new Date( 2026, 7, 2, i ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			// Band ticks are sampled by index, so without steering they land on
+			// bare hours belonging to days the axis never names.
+			expect( inChart().getByText( 'Aug 2' ) ).toBeInTheDocument();
+			expect( inChart().getByText( 'Aug 3' ) ).toBeInTheDocument();
+		} );
+
+		test( 'dates every tick for sub-daily buckets spanning a week', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 168 }, ( _, i ) => ( {
+							date: new Date( 2026, 7, 2, i ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			// Too long for a step within one day to fit the tick count, so the axis
+			// has to step whole days to keep naming them.
+			expect( inChart().queryByText( /\d{1,2}\s(AM|PM)/ ) ).not.toBeInTheDocument();
+			expect( inChart().getByText( 'Aug 2' ) ).toBeInTheDocument();
+			expect( inChart().getByText( 'Aug 8' ) ).toBeInTheDocument();
+		} );
+
+		test( 'names the year for monthly buckets that do not start in January', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 36 }, ( _, i ) => ( {
+							date: new Date( 2023, 6 + i, 1 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			const ticks = inChart().getAllByText( /^\d{4}$/ );
+			expect( distinctTexts( ticks ) ).toEqual( new Set( [ '2024', '2025', '2026' ] ) );
+		} );
+
+		test( 'reads tickResolution off the y axis on a horizontal chart', () => {
+			renderWithTheme( {
+				width: 800,
+				orientation: 'horizontal',
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( 2024, 0, 1, 13 ), value: 10 } ],
+						options: {},
+					},
+				],
+				options: { axis: { y: { tickResolution: 'hour' } } },
+			} );
+
+			// The dates move to the y axis with the orientation, so the hint has to
+			// follow them; read off `axis.x` this would fall back to a date tick.
+			expect( inChart().getByText( /^1\sPM$/ ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders an hour tick when tickResolution declares the buckets sub-daily', () => {
+			// A single bucket has no point spacing to infer the resolution from,
+			// so only the declared resolution can reach the hour format.
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( 2024, 0, 1, 13 ), value: 10 } ],
+						options: {},
+					},
+				],
+				options: { axis: { x: { tickResolution: 'hour' } } },
+			} );
+
+			expect( inChart().getByText( /^1\sPM$/ ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Time series tooltip labels', () => {
+		const optionsFor = (
+			data: Parameters< typeof useBarChartOptions >[ 0 ],
+			options?: Parameters< typeof useBarChartOptions >[ 2 ]
+		) => renderHook( () => useBarChartOptions( data, false, options ) ).result.current;
+
+		test( 'names the full date for daily buckets', () => {
+			const { tooltip } = optionsFor( [
+				{
+					label: 'Series A',
+					data: Array.from( { length: 14 }, ( _, i ) => ( {
+						date: new Date( 2024, 0, 1 + i ),
+						value: 10 + i,
+					} ) ),
+					options: {},
+				},
+			] );
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 3 ).getTime(), 0, [] ) ).toBe(
+				'January 3, 2024'
+			);
+		} );
+
+		test( 'names the month, without a day, for monthly buckets', () => {
+			const { tooltip } = optionsFor( [
+				{
+					label: 'Series A',
+					data: Array.from( { length: 24 }, ( _, i ) => ( {
+						date: new Date( 2024, i, 1 ),
+						value: 10 + i,
+					} ) ),
+					options: {},
+				},
+			] );
+
+			expect( tooltip.labelFormatter( new Date( 2025, 2, 1 ).getTime(), 0, [] ) ).toBe(
+				'March 2025'
+			);
+		} );
+
+		test( 'names only the year for yearly buckets', () => {
+			const { tooltip } = optionsFor( [
+				{
+					label: 'Series A',
+					data: Array.from( { length: 4 }, ( _, i ) => ( {
+						date: new Date( 2023 + i, 0, 1 ),
+						value: 10 + i,
+					} ) ),
+					options: {},
+				},
+			] );
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 1 ).getTime(), 0, [] ) ).toBe( '2024' );
+		} );
+
+		test( 'follows a declared tickResolution coarser than the point spacing', () => {
+			const { tooltip } = optionsFor(
+				[
+					{
+						label: 'Series A',
+						data: Array.from( { length: 24 }, ( _, i ) => ( {
+							date: new Date( 2024, i, 1 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+				{ axis: { x: { tickResolution: 'year' } } }
+			);
+
+			expect( tooltip.labelFormatter( new Date( 2025, 2, 1 ).getTime(), 0, [] ) ).toBe( '2025' );
+		} );
+
+		test( 'detects sub-daily resolution past a leading gap', () => {
+			const { tooltip } = optionsFor( [
+				{
+					label: 'Series A',
+					data: [
+						{ date: new Date( 2024, 0, 1 ), value: 10 },
+						{ date: new Date( 2024, 0, 3 ), value: 20 },
+						{ date: new Date( 2024, 0, 3, 6 ), value: 30 },
+					],
+					options: {},
+				},
+			] );
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 3, 6 ).getTime(), 0, [] ) ).toMatch(
+				/^January 3, 2024 at 6\sAM$/
+			);
+		} );
+
+		test( 'adds the hour for sub-daily buckets', () => {
+			const { tooltip } = optionsFor( [
+				{
+					label: 'Series A',
+					data: Array.from( { length: 12 }, ( _, i ) => ( {
+						date: new Date( 2024, 0, 1, i ),
+						value: 10 + i,
+					} ) ),
+					options: {},
+				},
+			] );
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 1, 6 ).getTime(), 0, [] ) ).toMatch(
+				/^January 1, 2024 at 6\sAM$/
+			);
+		} );
+
+		test( 'adds the hour when tickResolution declares the buckets sub-daily', () => {
+			const { tooltip } = optionsFor(
+				[
+					{
+						label: 'Series A',
+						data: [ { date: new Date( 2024, 0, 1, 13 ), value: 10 } ],
+						options: {},
+					},
+				],
+				{ axis: { x: { tickResolution: 'hour' } } }
+			);
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 1, 13 ).getTime(), 0, [] ) ).toMatch(
+				/^January 1, 2024 at 1\sPM$/
+			);
+		} );
+
+		test( 'names a declared weekly bucket as a week, not a single day', () => {
+			const { tooltip } = optionsFor(
+				[
+					{
+						label: 'Series A',
+						data: Array.from( { length: 8 }, ( _, i ) => ( {
+							date: new Date( 2026, 0, 5 + i * 7 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+				{ axis: { x: { tickResolution: 'week' } } }
+			);
+
+			expect( tooltip.labelFormatter( new Date( 2026, 0, 12 ).getTime(), 0, [] ) ).toBe(
+				'Week of January 12, 2026'
+			);
+		} );
+
+		test( 'follows tickResolution declared on the y axis of a horizontal chart', () => {
+			// The dates move to the y axis with the orientation, so the tooltip has
+			// to follow them the way the ticks do.
+			const { tooltip } = renderHook( () =>
+				useBarChartOptions(
+					[
+						{
+							label: 'Series A',
+							data: [ { date: new Date( 2024, 0, 1, 13 ), value: 10 } ],
+							options: {},
+						},
+					],
+					true,
+					{ axis: { y: { tickResolution: 'hour' } } }
+				)
+			).result.current;
+
+			expect( tooltip.labelFormatter( new Date( 2024, 0, 1, 13 ).getTime(), 0, [] ) ).toMatch(
+				/^January 1, 2024 at 1\sPM$/
+			);
+		} );
+
+		test( 'lets an explicit tickFormat override the resolution-derived label', () => {
+			const { tooltip } = optionsFor(
+				[
+					{
+						label: 'Series A',
+						data: Array.from( { length: 24 }, ( _, i ) => ( {
+							date: new Date( 2024, i, 1 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+				{
+					axis: {
+						x: {
+							tickResolution: 'month',
+							tickFormat: ( timestamp: number ) =>
+								new Date( timestamp ).toLocaleDateString( 'en-US', { dateStyle: 'short' } ),
+						},
+					},
+				}
+			);
+
+			expect( tooltip.labelFormatter( new Date( 2025, 2, 1 ).getTime(), 0, [] ) ).toBe( '3/1/25' );
+		} );
+
+		test( 'names the hovered bar bucket in the rendered tooltip', async () => {
+			const user = userEvent.setup();
+			renderWithTheme( {
+				withTooltips: true,
+				data: [
+					{
+						label: 'Series A',
+						data: Array.from( { length: 24 }, ( _, i ) => ( {
+							date: new Date( 2024, i, 1 ),
+							value: 10 + i,
+						} ) ),
+						options: {},
+					},
+				],
+			} );
+
+			screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}' );
+
+			// The month tick reads "2024" here; the tooltip names the bucket itself.
+			expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'January 2024: 10' );
+		} );
+	} );
+
+	describe( 'Pattern', () => {
+		test( 'uses point colors with a series fallback and preserves pattern fills', () => {
+			const data: SeriesData[] = [
+				{
+					label: 'Scores',
+					data: [
+						{
+							label: 'First day',
+							value: 80,
+							color: 'var(--wpds-color-foreground-content-success-weak)',
+						},
+						{
+							label: 'Second day',
+							value: 40,
+							color: 'var(--wpds-color-foreground-content-error-weak)',
+						},
+						{ label: 'Third day', value: 60 },
+					],
+				},
+			];
+			const { rerender } = render( <BarChart { ...defaultProps } data={ data } /> );
+			const getBars = getBarRects;
+			const bars = getBars();
+			expect( bars ).toHaveLength( 3 );
+			expect( bars[ 0 ] ).toHaveAttribute( 'fill', data[ 0 ].data[ 0 ].color );
+			expect( bars[ 1 ] ).toHaveAttribute( 'fill', data[ 0 ].data[ 1 ].color );
+			const fallbackFill = bars[ 2 ].getAttribute( 'fill' );
+			expect( fallbackFill ).toBeTruthy();
+			rerender(
+				<BarChart
+					{ ...defaultProps }
+					data={ [
+						{
+							...data[ 0 ],
+							data: data[ 0 ].data.map( point => ( { ...point, color: undefined } ) ),
+						},
+					] }
+				/>
+			);
+			expect( getBars()[ 0 ] ).toHaveAttribute( 'fill', fallbackFill );
+			rerender( <BarChart { ...defaultProps } data={ data } withPatterns /> );
+			for ( const bar of getBars() ) {
+				expect( bar ).toHaveAttribute(
+					'fill',
+					expect.stringMatching( /^url\(#bar-pattern-.+-0\)$/ )
+				);
+			}
+		} );
+
+		test( 'renders with patterns', () => {
+			renderWithTheme( { withPatterns: true } );
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+
+			// Check that pattern definitions container is present
+			expect( screen.getByTestId( 'bar-chart-patterns' ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders without patterns by default', () => {
+			renderWithTheme( { withPatterns: false } );
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+
+			// Check that no pattern definitions container is present
+			expect( screen.queryByTestId( 'bar-chart-patterns' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'fills the comparison bar with its own pattern when patterns are enabled', () => {
+			renderWithTheme( {
+				withPatterns: true,
+				data: [
+					{
+						label: 'This period',
+						group: 'views',
+						data: [
+							{ label: 'Mon', value: 10 },
+							{ label: 'Tue', value: 20 },
+						],
+					},
+					{
+						label: 'Previous period',
+						group: 'views',
+						options: { type: 'comparison' as const },
+						data: [
+							{ label: 'Mon', value: 15 },
+							{ label: 'Tue', value: 25 },
+						],
+					},
+				],
+			} );
+
+			const shadow = screen.getAllByTestId( /^bar-chart-comparison-\d+-\d+$/ )[ 0 ];
+			const shadowFill = shadow.getAttribute( 'fill' );
+			expect( shadowFill ).toMatch( /^url\(#bar-pattern-.+-1\)$/ );
+		} );
+	} );
+
+	describe( 'Keyboard Navigation Accessibility', () => {
+		describe( 'Chart Focus and Accessibility Attributes', () => {
+			test( 'chart container has proper accessibility attributes', () => {
+				renderWithTheme();
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+
+				expect( chart ).toHaveAttribute( 'tabIndex', '0' );
+				expect( chart ).toHaveAttribute( 'role', 'application' );
+				expect( chart ).toHaveAttribute( 'aria-label', 'Bar chart' );
+				expect( screen.queryByLabelText( 'XYChart' ) ).not.toBeInTheDocument();
+			} );
+
+			test( 'chart container can receive focus', async () => {
+				const user = userEvent.setup();
+				renderWithTheme();
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+
+				await user.tab();
+				expect( chart ).toHaveFocus();
+			} );
+		} );
+
+		describe( 'Activation', () => {
+			const SERIES_A = {
+				label: 'Series A',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10 },
+					{ date: new Date( '2024-01-02' ), value: 20 },
+				],
+				options: {},
+			};
+			const SERIES_B = {
+				label: 'Series B',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 15 },
+					{ date: new Date( '2024-01-02' ), value: 25 },
+				],
+				options: {},
+			};
+
+			test( 'Enter hands the selected bar to onDatumActivate', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { withTooltips: true, data: [ SERIES_A ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}{Enter}' );
+
+				expect( onDatumActivate ).toHaveBeenCalledTimes( 1 );
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					datum: SERIES_A.data[ 1 ],
+					index: 1,
+					key: 'Series A',
+				} );
+			} );
+
+			test( 'Space activates the selected bar too', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { withTooltips: true, data: [ SERIES_A ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}[Space]' );
+
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					datum: SERIES_A.data[ 0 ],
+					index: 0,
+					key: 'Series A',
+				} );
+			} );
+
+			// The navigation index strides series-major within each data point, the
+			// order the highlight outlines bars in, so the second stop is the second
+			// series' first bar.
+			test( 'walks the series at each data point before the next point', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { withTooltips: true, data: [ SERIES_A, SERIES_B ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}{Enter}' );
+
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					datum: SERIES_B.data[ 0 ],
+					index: 0,
+					key: 'Series B',
+				} );
+			} );
+
+			test( 'Enter with no bar selected activates nothing', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { withTooltips: true, data: [ SERIES_A ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{Enter}' );
+
+				expect( onDatumActivate ).not.toHaveBeenCalled();
+			} );
+		} );
+
+		describe( 'Arrow Key Navigation', () => {
+			test( 'right arrow key navigates to next data point', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'Series A',
+							group: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							group: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Single tab should focus on the first tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+				// The category/value row joins with a space after the colon.
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Jan 1: 10' );
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+
+				// Second tab should focus on the second tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series B' );
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+			} );
+
+			test( 'keeps the tooltip open once the chart re-renders under it', async () => {
+				// visx hides its tooltip on a debounce and cancels only the most recently
+				// scheduled hide, so anything that re-runs the tooltip effect while nothing
+				// is shown leaves a hide pending that lands on the next tooltip. Seeding a
+				// hidden series re-renders the chart right after mount, which is exactly
+				// that shape.
+				jest.useFakeTimers();
+
+				try {
+					const user = userEvent.setup( { advanceTimers: jest.advanceTimersByTime } );
+					renderWithTheme( {
+						withTooltips: true,
+						defaultHiddenSeries: [ 'Series B' ],
+						data: [
+							{
+								label: 'Series A',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+									{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+								],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+									{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+								],
+								options: {},
+							},
+						],
+					} );
+
+					const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+					chart.focus();
+
+					await user.keyboard( '{ArrowRight}' );
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+
+					// Well past any pending hide.
+					await act( async () => {
+						jest.advanceTimersByTime( 5000 );
+					} );
+
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toBeInTheDocument();
+
+					// Leaving navigation still closes it.
+					await user.keyboard( '{Escape}' );
+					await act( async () => {
+						jest.advanceTimersByTime( 5000 );
+					} );
+
+					expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+				} finally {
+					jest.useRealTimers();
+				}
+			} );
+
+			test( 'left arrow key navigates to previous data point', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Right arrow key should focus on the first tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+
+				// Right arrow key should focus on the second tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series B' );
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+
+				// Left arrow key should focus on the first tooltip.
+				await user.keyboard( '{ArrowLeft}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+			} );
+		} );
+
+		describe( 'Keyboard navigation boundaries', () => {
+			// Three points, so a clamp at a boundary lands on a different index than a wrap would.
+			const threePointData = [
+				{
+					label: 'Series A',
+					data: [
+						{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+						{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						{ date: new Date( '2024-01-03' ), value: 30, label: 'Jan 3' },
+					],
+					options: {},
+				},
+			];
+
+			test( 'right arrow at the last point stays put and keeps the highlight (no escape, no wrap)', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( { withTooltips: true, data: threePointData } );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Move to the first, then on to the last (third) point.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-2' ) ).toHaveFocus();
+
+				// Right arrow at the last point must not move focus: the highlighted
+				// bar/tooltip stays visible and focused (focus does not move).
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-2' ) ).toBeInTheDocument();
+				expect( screen.getByTestId( 'chart-tooltip-2' ) ).toHaveFocus();
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+				// Focus did not escape back to the chart container.
+				expect( chart ).not.toHaveFocus();
+			} );
+
+			// Left arrow as the first key is the hard case: it clamps from the unselected -1, and a wrap
+			// would land on the last point instead.
+			test( 'left arrow as the first key selects the first point', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( { withTooltips: true, data: threePointData } );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowLeft}' );
+
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.queryByTestId( 'chart-tooltip-2' ) ).not.toBeInTheDocument();
+			} );
+		} );
+
+		describe( 'Comparison tooltip', () => {
+			test( 'tooltip shows both the primary and comparison values', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'This period',
+							group: 'views',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+						},
+						{
+							label: 'Previous period',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				await user.keyboard( '{ArrowRight}' );
+				const tooltip = screen.getByTestId( 'chart-tooltip-0' );
+				// Both periods are shown, each as "label: value" with a space after the colon.
+				expect( tooltip ).toHaveTextContent( 'This period: 10' );
+				expect( tooltip ).toHaveTextContent( 'Previous period: 15' );
+			} );
+
+			test( 'pairs the comparison value by date when the bars have empty labels', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'This period',
+							group: 'views',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: '' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: '' },
+							],
+						},
+						{
+							label: 'Previous period',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: '' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: '' },
+							],
+						},
+					],
+				} );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}' );
+
+				const tooltip = screen.getByTestId( 'chart-tooltip-1' );
+				expect( tooltip ).toHaveTextContent( 'This period: 20' );
+				expect( tooltip ).toHaveTextContent( 'Previous period: 25' );
+			} );
+
+			test( 'keyboard navigation past the first slot stays on the primary bar, not the comparison series', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'This period',
+							group: 'views',
+							data: [
+								{ label: 'Mon', value: 10 },
+								{ label: 'Tue', value: 20 },
+							],
+						},
+						{
+							label: 'Previous period',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [
+								{ label: 'Mon', value: 15 },
+								{ label: 'Tue', value: 25 },
+							],
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Slot 0 is the first primary bar (Mon); slot 1 must be the SECOND primary
+				// bar (Tue) — not the comparison series' first bar. The keyboard index space
+				// counts only primary bars, so the tooltip must too.
+				await user.keyboard( '{ArrowRight}' );
+				await user.keyboard( '{ArrowRight}' );
+				const tooltip = screen.getByTestId( 'chart-tooltip-1' );
+				expect( tooltip ).toHaveTextContent( 'Tue' );
+				expect( tooltip ).toHaveTextContent( 'This period' );
+				expect( tooltip ).toHaveTextContent( '20' );
+				expect( tooltip ).toHaveTextContent( 'Previous period' );
+				expect( tooltip ).toHaveTextContent( '25' );
+			} );
+
+			test( 'reports a bucket with no reading as having no data', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}' );
+
+				const tooltip = screen.getByTestId( 'chart-tooltip-0' );
+				expect( tooltip ).toHaveTextContent( 'Jan 1: No data' );
+				expect( tooltip ).not.toHaveTextContent( 'Jan 1: 0' );
+			} );
+
+			test( 'keeps both periods in the tooltip when the comparison period has no reading', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'This period',
+							group: 'views',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+						},
+						{
+							label: 'Previous period',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+						},
+					],
+				} );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}' );
+
+				const tooltip = screen.getByTestId( 'chart-tooltip-0' );
+				expect( tooltip ).toHaveTextContent( 'This period: 10' );
+				expect( tooltip ).toHaveTextContent( 'Previous period: No data' );
+			} );
+
+			test( 'draws no comparison shadow for a comparison bucket with no reading', () => {
+				renderWithTheme( {
+					data: [
+						{
+							label: 'This period',
+							group: 'views',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+						},
+						{
+							label: 'Previous period',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+						},
+					],
+				} );
+
+				expect( screen.queryByTestId( 'bar-chart-comparison-1-0' ) ).not.toBeInTheDocument();
+				expect( screen.getByTestId( 'bar-chart-comparison-1-1' ) ).toBeInTheDocument();
+			} );
+		} );
+
+		describe( 'Tab Key Navigation', () => {
+			test( 'tab key exits navigation when reaching end of data points', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Chart should be in focus.
+				expect( chart ).toHaveFocus();
+
+				// Clicking tab should not open any tooltips.
+				await user.tab();
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+				// Chart should no longer be in focus.
+				expect( chart ).not.toHaveFocus();
+			} );
+		} );
+
+		describe( 'Keyboard Highlighting', () => {
+			test( 'shows tooltip when navigating with keyboard', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Navigate to the first bar
+				await user.keyboard( '{ArrowRight}' );
+
+				// Check that the tooltip appears for Series A
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toBeInTheDocument();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+			} );
+
+			test( 'generates correct CSS selector for keyboard highlighting', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					withTooltips: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+				chart.focus();
+
+				// Navigate to the first bar (Series A, Jan 1)
+				await user.keyboard( '{ArrowRight}' );
+
+				// Check that styles are generated by looking for the chart container with data-chart-id
+				const chartContainer = screen.getByTestId( 'bar-chart' );
+				expect( chartContainer ).toBeInTheDocument();
+
+				// Verify tooltip is showing (which indicates highlighting is working)
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toBeInTheDocument();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+			} );
+
+			describe( 'with a leading bucket that has no reading', () => {
+				const data = [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							{ date: new Date( '2024-01-03' ), value: 30, label: 'Jan 3' },
+						],
+						options: {},
+					},
+				];
+
+				test( 'outlines nothing when the selected bucket has no bar', async () => {
+					const user = userEvent.setup();
+					renderWithTheme( { withTooltips: true, data } );
+
+					screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+					await user.keyboard( '{ArrowRight}' );
+
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'No data' );
+					expect( screen.queryByTestId( 'bar-chart-selected-ring' ) ).not.toBeInTheDocument();
+				} );
+
+				test( 'outlines the first rendered bar for the first bucket with a reading', async () => {
+					const user = userEvent.setup();
+					renderWithTheme( { withTooltips: true, data } );
+
+					screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+					await user.keyboard( '{ArrowRight}{ArrowRight}' );
+
+					expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( '20' );
+					expect( selectedRingGeometry() ).toEqual( geometryOf( visxBars()[ 0 ] ) );
+				} );
+
+				test( 'skips the bars an earlier series left out when outlining a later series', async () => {
+					const user = userEvent.setup();
+					const twoSeries = [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+								{ date: new Date( '2024-01-03' ), value: 30, label: 'Jan 3' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 5, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 15, label: 'Jan 2' },
+								{ date: new Date( '2024-01-03' ), value: 25, label: 'Jan 3' },
+							],
+							options: {},
+						},
+					];
+					renderWithTheme( { withTooltips: true, data: twoSeries } );
+
+					screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+					await user.keyboard( '{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}' );
+
+					expect( screen.getByTestId( 'chart-tooltip-3' ) ).toHaveTextContent( '15' );
+					expect( selectedRingGeometry() ).toEqual( geometryOf( visxBars()[ 3 ] ) );
+				} );
+			} );
+		} );
+
+		test( 'keyboard navigation works with custom tooltip renderer', async () => {
+			const user = userEvent.setup();
+			const customTooltipRenderer = jest.fn( ( { tooltipData } ) => (
+				<div role="tooltip" data-testid="custom-tooltip">
+					Custom:{ ' ' }
+					{ tooltipData?.nearestDatum?.datum?.date?.toLocaleDateString( 'ja-JP', {
+						weekday: 'long',
+						year: 'numeric',
+						month: 'long',
+						day: 'numeric',
+					} ) }
+				</div>
+			) );
+
+			renderWithTheme( { withTooltips: true, renderTooltip: customTooltipRenderer } );
+
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			chart.focus();
+
+			// Click on right arrow key to focus on the first tooltip.
+			await user.keyboard( '{ArrowRight}' );
+
+			expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+			expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( '2024年1月1日月曜日' );
+
+			const customTooltip = screen.getByTestId( 'custom-tooltip' );
+			expect( customTooltip ).toBeInTheDocument();
+			expect( customTooltipRenderer ).toHaveBeenCalled();
+		} );
+	} );
+
+	/* eslint-disable testing-library/no-node-access */
+	describe( 'Zero Value Display', () => {
+		test( 'renders visible bars for zero values with default settings', () => {
+			renderWithTheme( {
+				showZeroValues: true,
+				data: [
+					{
+						label: 'Test Series',
+						data: [
+							{ label: 'Zero', value: 0 },
+							{ label: 'Non-zero', value: 100 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			const svgElement = screen
+				.getByRole( 'application', { name: /bar chart/i } )
+				.querySelector( 'svg' );
+			const bars = svgElement?.querySelectorAll( '.visx-bar-group rect' );
+
+			// Should have 2 bars
+			expect( bars?.length ).toBe( 2 );
+
+			// Both bars should have height > 0 (zero values get minimum height)
+			bars?.forEach( bar => {
+				const height = parseFloat( bar.getAttribute( 'height' ) || '0' );
+				expect( height ).toBeGreaterThan( 0 );
+			} );
+		} );
+
+		test( 'Does not render zero-value bars when default showZeroValues is false', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Test Series',
+						data: [
+							{ label: 'Zero', value: 0 },
+							{ label: 'Non-zero', value: 100 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			const svgElement = screen
+				.getByRole( 'application', { name: /bar chart/i } )
+				.querySelector( 'svg' );
+			const bars = svgElement?.querySelectorAll( '.visx-bar-group rect' );
+
+			// Should have 2 bars
+			expect( bars?.length ).toBe( 2 );
+
+			// Both bars should have height > 0 (zero values get minimum height)
+			const barZero = bars[ 0 ];
+			const height = parseFloat( barZero.getAttribute( 'height' ) || '0' );
+			expect( height ).toBe( 0 );
+
+			// Second bar should have height more than 0.
+			const barOne = bars[ 1 ];
+			const heightOne = parseFloat( barOne.getAttribute( 'height' ) || '0' );
+			expect( heightOne ).toBeGreaterThan( 0 );
+		} );
+
+		test( 'works correctly with horizontal orientation', () => {
+			renderWithTheme( {
+				showZeroValues: true,
+				data: [
+					{
+						label: 'Test Series',
+						data: [
+							{ label: 'Zero', value: 0 },
+							{ label: 'Non-zero', value: 100 },
+						],
+						options: {},
+					},
+				],
+				orientation: 'horizontal',
+			} );
+
+			const svgElement = screen
+				.getByRole( 'application', { name: /bar chart/i } )
+				.querySelector( 'svg' );
+			const bars = svgElement?.querySelectorAll( '.visx-bar-group rect' );
+
+			// Both bars should be visible in horizontal mode
+			expect( bars?.length ).toBe( 2 );
+			bars?.forEach( bar => {
+				const width = parseFloat( bar.getAttribute( 'width' ) || '0' );
+				expect( width ).toBeGreaterThan( 0 );
+			} );
+		} );
+
+		test( 'ensures minimum pixel height for zero values in small charts', () => {
+			// With a small chart height (100px) and large data range, zero-value bars
+			// should still be visible (at least 3px based on MIN_PIXEL_HEIGHT)
+			renderWithTheme( {
+				showZeroValues: true,
+				height: 100,
+				data: [
+					{
+						label: 'Test Series',
+						data: [
+							{ label: 'Zero', value: 0 },
+							{ label: 'Large', value: 10000 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			const svgElement = screen
+				.getByRole( 'application', { name: /bar chart/i } )
+				.querySelector( 'svg' );
+			const bars = svgElement?.querySelectorAll( '.visx-bar-group rect' );
+
+			expect( bars?.length ).toBe( 2 );
+
+			// The zero-value bar (first bar) should have a minimum visible height.
+			// We check for >= 2px to allow for rounding in the pixel calculation.
+			const zeroBar = bars?.[ 0 ];
+			const zeroBarHeight = parseFloat( zeroBar?.getAttribute( 'height' ) || '0' );
+			expect( zeroBarHeight ).toBeGreaterThanOrEqual( 2 );
+		} );
+	} );
+
+	/* eslint-enable testing-library/no-node-access */
+
+	describe( 'Label Overflow Ellipsis', () => {
+		const longLabelData = [
+			{
+				label: 'Series A',
+				data: [
+					{ label: 'Very Long Category Label One', value: 100 },
+					{ label: 'Very Long Category Label Two', value: 200 },
+					{ label: 'Very Long Category Label Three', value: 150 },
+				],
+				options: {},
+			},
+		];
+
+		test( 'renders chart with labelOverflow ellipsis option', () => {
+			renderWithTheme( {
+				data: longLabelData,
+				options: {
+					axis: {
+						x: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'truncates labels with CSS text-overflow ellipsis', () => {
+			renderWithTheme( {
+				width: 300, // Narrow width to force truncation
+				data: longLabelData,
+				options: {
+					axis: {
+						x: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			// Labels should be rendered with truncation styles
+			const label = screen.getByText( /Very Long Category Label One/i );
+			expect( label ).toHaveStyle( { textOverflow: 'ellipsis' } );
+			expect( label ).toHaveStyle( { overflow: 'hidden' } );
+			expect( label ).toHaveStyle( { whiteSpace: 'nowrap' } );
+		} );
+
+		test( 'sets title attribute for hover tooltips on truncated labels', () => {
+			renderWithTheme( {
+				width: 300,
+				data: longLabelData,
+				options: {
+					axis: {
+						x: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			// Title attribute should show full text on hover
+			const label = screen.getByText( /Very Long Category Label One/i );
+			expect( label ).toHaveAttribute( 'title', 'Very Long Category Label One' );
+		} );
+
+		test( 'applies truncation to x-axis for vertical bar charts', () => {
+			renderWithTheme( {
+				width: 300,
+				data: longLabelData,
+				orientation: 'vertical',
+				options: {
+					axis: {
+						x: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			// X-axis labels should have truncation
+			const label = screen.getByText( /Very Long Category Label One/i );
+			expect( label ).toHaveStyle( { textOverflow: 'ellipsis' } );
+		} );
+
+		test( 'applies truncation to y-axis for horizontal bar charts', () => {
+			renderWithTheme( {
+				width: 300,
+				data: longLabelData,
+				orientation: 'horizontal',
+				options: {
+					axis: {
+						y: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			// Y-axis labels should have truncation in horizontal mode
+			const label = screen.getByText( /Very Long Category Label One/i );
+			expect( label ).toHaveStyle( { textOverflow: 'ellipsis' } );
+		} );
+
+		test( 'handles very small chart widths gracefully', () => {
+			renderWithTheme( {
+				width: 100, // Very small width
+				data: longLabelData,
+				options: {
+					axis: {
+						x: {
+							labelOverflow: 'ellipsis',
+						},
+					},
+				},
+			} );
+
+			// Chart should still render without errors
+			expect( screen.getByRole( 'application', { name: /bar chart/i } ) ).toBeInTheDocument();
+
+			// Labels should still be present and have minimum width applied
+			const label = screen.getByText( /Very Long Category Label One/i );
+			expect( label ).toBeInTheDocument();
+		} );
+
+		test( 'does not apply truncation styles when labelOverflow is not set', () => {
+			renderWithTheme( {
+				width: 300,
+				data: longLabelData,
+			} );
+
+			// Without labelOverflow, labels should use default SVG text rendering
+			// which doesn't have CSS text-overflow
+			const labels = screen.getAllByText( /Very Long Category Label/i );
+			labels.forEach( label => {
+				// SVG text elements don't have textOverflow style
+				expect( label.tagName.toLowerCase() ).not.toBe( 'div' );
+			} );
+		} );
+	} );
+
+	describe( 'Value axis baseline', () => {
+		it( 'starts the value axis at zero in horizontal charts', () => {
+			const { result } = renderHook( () => useBarChartOptions( steadyTrafficData, true, {} ) );
+			const xScale = result.current.xScale as { domain?: number[] };
+			expect( xScale.domain ).toEqual( [ 0, 989 ] );
+		} );
+
+		it( 'lets a caller opt out of the zero baseline', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions( steadyTrafficData, false, { yScale: { zero: false } } )
+			);
+			const yScale = result.current.yScale as { domain?: number[] };
+			expect( yScale.domain ).toBeUndefined();
+		} );
+
+		it( 'reads the opt-out from the x scale of a horizontal chart', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions( steadyTrafficData, true, { xScale: { zero: false } } )
+			);
+			const xScale = result.current.xScale as { domain?: number[] };
+			expect( xScale.domain ).toBeUndefined();
+		} );
+
+		it( 'keeps an explicit domain as given', () => {
+			const { result } = renderHook( () =>
+				useBarChartOptions( steadyTrafficData, false, { yScale: { domain: [ 900, 1000 ] } } )
+			);
+			const yScale = result.current.yScale as { domain?: number[] };
+			expect( yScale.domain ).toEqual( [ 900, 1000 ] );
+		} );
+
+		it( 'renders an explicit domain without stretching it to zero', () => {
+			render(
+				<BarChart
+					data={ steadyTrafficData }
+					width={ 400 }
+					height={ 300 }
+					options={ { yScale: { domain: [ 900, 1000 ] } } }
+				/>
+			);
+			const heights = Array.from( getBarRects() ).map( bar =>
+				parseFloat( bar.getAttribute( 'height' ) || '0' )
+			);
+			// 921 sits at 21% of a 900–1000 axis; on a 0–1000 axis it would be 92%.
+			expect( Math.min( ...heights ) / Math.max( ...heights ) ).toBeLessThan( 0.5 );
+		} );
+
+		it( 'keeps zero in the domain when the caller opts out but a comparison series is present', () => {
+			const data = [
+				...steadyTrafficData,
+				{
+					label: 'Previous',
+					options: { type: 'comparison' as const },
+					data: steadyTrafficData[ 0 ].data.map( point => ( {
+						...point,
+						value: point.value - 10,
+					} ) ),
+				},
+			];
+			const { result } = renderHook( () =>
+				useBarChartOptions( data, false, { yScale: { zero: false } } )
+			);
+			const yScale = result.current.yScale as { domain?: number[] };
+			expect( yScale.domain ).toEqual( [ 0, 989 ] );
+		} );
+
+		it( 'renders every bar of steady traffic at most a few percent shorter than the tallest', () => {
+			render( <BarChart data={ steadyTrafficData } width={ 400 } height={ 300 } /> );
+			const heights = Array.from( getBarRects() ).map( bar =>
+				parseFloat( bar.getAttribute( 'height' ) || '0' )
+			);
+			expect( heights ).toHaveLength( 7 );
+			const tallest = Math.max( ...heights );
+			expect( Math.min( ...heights ) / tallest ).toBeGreaterThan( 0.9 );
+		} );
+	} );
+
+	describe( 'Comparison Series', () => {
+		it.each( [
+			[ 'opaque, in the colors the charts context reports', undefined ],
+			[ 'translucent, in the series colors, under the deprecated theme opacity', 0.5 ],
+		] )( 'draws a comparison bar behind the primary bar, %s', ( _case, opacity ) => {
+			const data: SeriesData[] = [
+				{
+					label: 'This year',
+					group: 'views',
+					data: [
+						{ label: 'Jan', value: 100 },
+						{ label: 'Feb', value: 120 },
+					],
+				},
+				{
+					label: 'Last year',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [
+						{ label: 'Jan', value: 80 },
+						{ label: 'Feb', value: 140 },
+					],
+				},
+			];
+			let barColors: string[] = [];
+			const CaptureBarColors = () => {
+				barColors = useBarColors()( data );
+				return null;
+			};
+			render(
+				<GlobalChartsProvider
+					theme={ opacity ? { barChart: { barStyles: { comparison: { opacity } } } } : undefined }
+				>
+					<CaptureBarColors />
+					<BarChart data={ data } width={ 400 } height={ 300 } />
+				</GlobalChartsProvider>
+			);
+
+			const [ primaryColor, comparisonColor ] = barColors;
+			const shadows = screen.getAllByTestId( /^bar-chart-comparison-\d+-\d+$/ );
+			expect( shadows ).toHaveLength( 2 );
+			expect( shadows[ 0 ] ).toHaveAttribute( 'fill', comparisonColor );
+			expect( shadows[ 0 ].attributes.getNamedItem( 'opacity' )?.value ).toBe(
+				opacity ? String( opacity ) : undefined
+			);
+			expect( comparisonColor === primaryColor ).toBe( !! opacity );
+
+			// eslint-disable-next-line testing-library/no-node-access
+			const bars = document.querySelectorAll( '.visx-bar' );
+			expect( bars.length ).toBeGreaterThanOrEqual( 2 );
+			expect( bars[ 0 ] ).toHaveAttribute( 'fill', primaryColor );
+		} );
+
+		it( "fills a comparison bar in its datum's own color, as a primary bar does", () => {
+			render(
+				<BarChart
+					width={ 400 }
+					height={ 300 }
+					data={ [
+						{ label: 'This year', group: 'views', data: [ { label: 'Jan', value: 100 } ] },
+						{
+							label: 'Last year',
+							group: 'views',
+							options: { type: 'comparison' as const },
+							data: [ { label: 'Jan', value: 80, color: '#123456' } ],
+						},
+					] }
+				/>
+			);
+
+			expect( screen.getByTestId( 'bar-chart-comparison-1-0' ) ).toHaveAttribute(
+				'fill',
+				'#123456'
+			);
+		} );
+
+		it( 'hides the comparison shadow group from assistive technology', () => {
+			const data = [
+				{
+					label: 'This year',
+					group: 'views',
+					data: [ { label: 'Jan', value: 100 } ],
+				},
+				{
+					label: 'Last year',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [ { label: 'Jan', value: 80 } ],
+				},
+			];
+			render( <BarChart data={ data } width={ 400 } height={ 300 } /> );
+
+			// The shadow is decorative: no keyboard/hover target and its value is surfaced
+			// through the tooltip, so it must not be announced as a separate element.
+			expect( screen.getByTestId( 'bar-chart-comparison-bars' ) ).toHaveAttribute(
+				'aria-hidden',
+				'true'
+			);
+		} );
+
+		it( 'renders comparison shadows in horizontal orientation', () => {
+			const data = [
+				{
+					label: 'This year',
+					group: 'views',
+					data: [
+						{ label: 'Jan', value: 100 },
+						{ label: 'Feb', value: 120 },
+					],
+				},
+				{
+					label: 'Last year',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [
+						{ label: 'Jan', value: 80 },
+						{ label: 'Feb', value: 140 },
+					],
+				},
+			];
+			render( <BarChart data={ data } orientation="horizontal" width={ 400 } height={ 300 } /> );
+
+			const shadows = screen.getAllByTestId( /^bar-chart-comparison-\d+-\d+$/ );
+			expect( shadows ).toHaveLength( 2 );
+		} );
+
+		it( 'expands value-axis domain to include comparison values exceeding the primary max', () => {
+			// Comparison value 150 exceeds primary max 100.
+			// Without domain expansion the value-axis scale config has no explicit domain,
+			// so visx derives it from primary BarSeries only (max=100).
+			// With the fix, an explicit domain [min,150] is set on the value-axis scale config.
+			const data = [
+				{
+					label: 'This year',
+					group: 'views',
+					data: [ { label: 'Jan', value: 100 } ],
+				},
+				{
+					label: 'Last year',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [ { label: 'Jan', value: 150 } ],
+				},
+			];
+
+			const { result } = renderHook( () => useBarChartOptions( data, false, {} ) );
+			const yScale = result.current.yScale as { domain?: number[] };
+			// domain must be set explicitly and its max must be >= 150
+			expect( yScale.domain ).toBeDefined();
+			expect( ( yScale.domain as number[] )[ 1 ] ).toBeGreaterThanOrEqual( 150 );
+		} );
+
+		it( 'keeps the value-axis baseline at zero so comparison bars encode magnitude truthfully', () => {
+			// All values are well above zero; the domain must still start at 0 so a bar's
+			// length stays proportional to its value (a non-zero baseline exaggerates differences).
+			const data = [
+				{
+					label: 'This period',
+					group: 'views',
+					data: [ { label: 'Mon', value: 420 } ],
+				},
+				{
+					label: 'Previous period',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [ { label: 'Mon', value: 510 } ],
+				},
+			];
+
+			const { result } = renderHook( () => useBarChartOptions( data, false, {} ) );
+			const yScale = result.current.yScale as { domain?: number[] };
+			expect( yScale.domain ).toBeDefined();
+			expect( ( yScale.domain as number[] )[ 0 ] ).toBe( 0 );
+		} );
+
+		it( 'zero-bases the value-axis domain in horizontal comparison charts', () => {
+			const data = [
+				{
+					label: 'This period',
+					group: 'views',
+					data: [ { label: 'Mon', value: 420 } ],
+				},
+				{
+					label: 'Previous period',
+					group: 'views',
+					options: { type: 'comparison' as const },
+					data: [ { label: 'Mon', value: 510 } ],
+				},
+			];
+
+			// In horizontal charts the value axis is x.
+			const { result } = renderHook( () => useBarChartOptions( data, true, {} ) );
+			const xScale = result.current.xScale as { domain?: number[] };
+			expect( xScale.domain ).toBeDefined();
+			expect( ( xScale.domain as number[] )[ 0 ] ).toBe( 0 );
+			expect( ( xScale.domain as number[] )[ 1 ] ).toBeGreaterThanOrEqual( 510 );
+		} );
+
+		it( 'counts only primary series for keyboard navigation when a comparison series is present', async () => {
+			const user = userEvent.setup();
+			// 2 primary + 1 comparison. totalPoints should be 2*2=4, not 3*2=6.
+			// If comparison is counted, the 5th ArrowRight would reference a phantom series
+			// and could throw or show an undefined tooltip key.
+			const data = [
+				{
+					label: 'Series A',
+					group: 'g',
+					data: [
+						{ label: 'Jan', value: 10 },
+						{ label: 'Feb', value: 20 },
+					],
+				},
+				{
+					label: 'Series B',
+					group: 'g2',
+					data: [
+						{ label: 'Jan', value: 15 },
+						{ label: 'Feb', value: 25 },
+					],
+				},
+				{
+					label: 'Last year',
+					group: 'g',
+					options: { type: 'comparison' as const },
+					data: [
+						{ label: 'Jan', value: 8 },
+						{ label: 'Feb', value: 18 },
+					],
+				},
+			];
+			render(
+				<GlobalChartsProvider>
+					<BarChart data={ data } width={ 400 } height={ 300 } withTooltips />
+				</GlobalChartsProvider>
+			);
+
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			chart.focus();
+
+			// Navigate through all 4 primary slots (2 series × 2 data points)
+			for ( let i = 0; i < 4; i++ ) {
+				await user.keyboard( '{ArrowRight}' );
+			}
+
+			// If totalPoints was 6 (counted comparison), tooltip 4 would still show.
+			// With correct totalPoints=4, navigation wraps and tooltip 0 is shown again,
+			// not phantom slot 4 (which would reference data[2], a comparison series).
+			// Either way, there must be no crash and navigation must stay in bounds.
+			const tooltips = screen.queryAllByTestId( /^chart-tooltip-/ );
+			expect( tooltips ).toHaveLength( 1 );
+			// The visible tooltip must belong to a primary series
+			const tooltipText = tooltips[ 0 ].textContent ?? '';
+			expect( [ 'Series A', 'Series B' ].some( k => tooltipText.includes( k ) ) ).toBe( true );
+		} );
+	} );
+
+	describe( 'Interactive Legend', () => {
+		it( 'filters series when interactive legend is enabled and series is toggled', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'test-interactive-bar-chart',
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// Click on first legend item to hide it
+			const legendItems = screen.getAllByRole( 'button' );
+			await user.click( legendItems[ 0 ] );
+
+			// The series should now be hidden (aria-pressed = false)
+			const legendItem = screen.getAllByRole( 'button' )[ 0 ];
+			expect( legendItem ).toHaveAttribute( 'aria-pressed', 'false' );
+		} );
+
+		it( 'does not filter series when legendInteractive is false', () => {
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: false },
+				chartId: 'test-non-interactive-bar-chart',
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// Legend items should not be interactive
+			const buttons = screen.queryAllByRole( 'button' );
+			expect( buttons ).toHaveLength( 0 );
+		} );
+
+		it( 'shows all series when chartId is missing even if legendInteractive is true', () => {
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				// No chartId provided
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// All legend items should be visible (not hidden)
+			const legendItems = screen.getAllByRole( 'button' );
+			legendItems.forEach( item => {
+				expect( item ).toHaveAttribute( 'aria-pressed', 'true' );
+			} );
+		} );
+
+		it( 'shows "All series are hidden" message when all series are toggled off', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'test-all-hidden-bar-chart',
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// Hide all series
+			const legendItems = screen.getAllByRole( 'button' );
+			await user.click( legendItems[ 0 ] );
+			await user.click( legendItems[ 1 ] );
+
+			// Check for the "all series hidden" message
+			expect(
+				screen.getByText( /all series are hidden.*click legend items to show data/i )
+			).toBeInTheDocument();
+		} );
+
+		it( 'drops the value-axis ticks when all series are hidden so the axes do not collapse', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				gridVisibility: 'both',
+				legend: { interactive: true },
+				chartId: 'test-hidden-axes-bar-chart',
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// The value axis renders numeric tick labels while there is data to scale against.
+			// (Series labels carry no digits and the empty-state message is text-only, so a bare
+			// number can only be an axis tick.)
+			const numericTick = /^[\d,]+$/;
+			expect( screen.getAllByText( numericTick ).length ).toBeGreaterThan( 0 );
+
+			const legendItems = screen.getAllByRole( 'button' );
+			await user.click( legendItems[ 0 ] );
+			await user.click( legendItems[ 1 ] );
+
+			// With no visible data the value scale would collapse, so the axes are removed rather
+			// than rendered squished at the top — no tick labels remain.
+			expect( screen.queryAllByText( numericTick ) ).toHaveLength( 0 );
+			expect(
+				screen.getByText( /all series are hidden.*click legend items to show data/i )
+			).toBeInTheDocument();
+		} );
+
+		it( 'hides a series programmatically when the legend is not interactive', () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-programmatic-bar"
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-programmatic-bar', 'Series A' );
+				context.toggleSeriesVisibility( 'test-programmatic-bar', 'Series B' );
+			} );
+
+			expect( screen.getByText( /all series are hidden/i ) ).toBeInTheDocument();
+		} );
+
+		it( 'omits the click instruction when the legend cannot be clicked', () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-empty-copy-bar"
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-empty-copy-bar', 'Series A' );
+			} );
+
+			expect( screen.getByText( 'All series are hidden.' ) ).toBeInTheDocument();
+			expect( screen.queryByText( /click legend items/i ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'still renders the other series when only one is hidden programmatically', () => {
+			// A test that hides every series would pass even if the chart still forced
+			// all series visible right up until `allSeriesHidden` short-circuited it —
+			// that shape of test masked a real bug in a sibling chart. Hiding exactly
+			// one of two series exercises the partial-hide render path: the bar count
+			// only drops to one if the hidden series' `BarSeries` is actually excluded
+			// from the `BarGroup`, not merely rendered with zero opacity.
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-programmatic-partial-bar"
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			// eslint-disable-next-line testing-library/no-node-access
+			const svgElement = chart.querySelector( 'svg' );
+			// eslint-disable-next-line testing-library/no-node-access
+			expect( svgElement?.querySelectorAll( '.visx-bar-group rect' ) ).toHaveLength( 2 );
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-programmatic-partial-bar', 'Series B' );
+			} );
+
+			expect( screen.queryByText( /all series are hidden/i ) ).not.toBeInTheDocument();
+			// eslint-disable-next-line testing-library/no-node-access
+			expect( svgElement?.querySelectorAll( '.visx-bar-group rect' ) ).toHaveLength( 1 );
+		} );
+	} );
+
+	describe( 'Legend group collapsing', () => {
+		const comparisonPair = [
+			{
+				label: 'Views',
+				group: 'views',
+				data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+			},
+			{
+				label: 'Views — previous',
+				group: 'views',
+				options: { type: 'comparison' as const },
+				data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+			},
+		];
+
+		it( 'renders one legend item per series by default', () => {
+			renderWithTheme( {
+				showLegend: true,
+				chartId: 'bar-legend-groups-default',
+				data: comparisonPair,
+			} );
+
+			expect( screen.getByText( 'Views' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Views — previous' ) ).toBeInTheDocument();
+		} );
+
+		it( 'collapses a group to one item when legend.collapseGroups is set', () => {
+			renderWithTheme( {
+				showLegend: true,
+				legend: { collapseGroups: true },
+				chartId: 'bar-legend-groups-collapsed',
+				data: comparisonPair,
+			} );
+
+			expect( screen.getByText( 'Views' ) ).toBeInTheDocument();
+			expect( screen.queryByText( 'Views — previous' ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'toggles only the clicked series when interactive without collapseGroups', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'bar-legend-groups-interactive',
+				data: comparisonPair,
+			} );
+
+			const buttons = screen.getAllByRole( 'button' );
+			await user.click( buttons[ 0 ] );
+
+			expect( buttons[ 0 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+			expect( buttons[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+		} );
+
+		it( 'toggles the whole group when interactive with collapseGroups', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true, collapseGroups: true },
+				chartId: 'bar-legend-groups-interactive-collapsed',
+				data: comparisonPair,
+			} );
+
+			const buttons = screen.getAllByRole( 'button' );
+			expect( buttons ).toHaveLength( 1 );
+
+			await user.click( buttons[ 0 ] );
+
+			expect( buttons[ 0 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+			expect(
+				screen.getByText( /all series are hidden.*click legend items to show data/i )
+			).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'defaultHiddenSeries', () => {
+		it( 'renders a series hidden when named in defaultHiddenSeries', () => {
+			render(
+				<GlobalChartsProvider>
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-default-hidden-bar"
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			const items = screen.getAllByRole( 'button' );
+			expect( items[ 0 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+			expect( items[ 1 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+		} );
+
+		it( 'lets the user reveal a series seeded hidden', async () => {
+			const user = userEvent.setup();
+
+			render(
+				<GlobalChartsProvider>
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-default-hidden-reveal-bar"
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			await user.click( screen.getAllByRole( 'button' )[ 1 ] );
+
+			expect( screen.getAllByRole( 'button' )[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+		} );
+	} );
+
+	describe( 'Keyboard navigation with a hidden primary series', () => {
+		const mountWithVisibilityToggle = () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withTooltips
+						chartId="test-hide-while-navigating"
+						data={ [
+							{
+								label: 'Series A',
+								data: [
+									{ label: 'Jan', value: 10 },
+									{ label: 'Feb', value: 20 },
+									{ label: 'Mar', value: 30 },
+								],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [
+									{ label: 'Jan', value: 15 },
+									{ label: 'Feb', value: 25 },
+									{ label: 'Mar', value: 35 },
+								],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			return ( label: string ) =>
+				act( () => context.toggleSeriesVisibility( 'test-hide-while-navigating', label ) );
+		};
+
+		it( 'moves the selection onto a visible bar when the selected series is hidden', async () => {
+			const user = userEvent.setup();
+			const toggle = mountWithVisibilityToggle();
+
+			screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+			for ( let i = 0; i < 6; i++ ) {
+				await user.keyboard( '{ArrowRight}' );
+			}
+			expect( screen.getByTestId( 'chart-tooltip-5' ) ).toHaveTextContent( 'Series B' );
+
+			toggle( 'Series B' );
+
+			expect( screen.getByTestId( 'chart-tooltip-2' ) ).toHaveTextContent( 'Series A' );
+			expect( screen.queryByTestId( 'chart-tooltip-5' ) ).not.toBeInTheDocument();
+
+			await user.keyboard( '{ArrowLeft}' );
+			expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series A' );
+		} );
+
+		it( 'leaves focus on the legend item that hid the selected series', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				withTooltips: true,
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'test-hide-from-legend-while-navigating',
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ label: 'Jan', value: 10 },
+							{ label: 'Feb', value: 20 },
+							{ label: 'Mar', value: 30 },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ label: 'Jan', value: 15 },
+							{ label: 'Feb', value: 25 },
+							{ label: 'Mar', value: 35 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+			for ( let i = 0; i < 6; i++ ) {
+				await user.keyboard( '{ArrowRight}' );
+			}
+
+			const seriesBToggle = screen.getByRole( 'button', { name: /Series B: visible/i } );
+			await user.click( seriesBToggle );
+
+			expect( seriesBToggle ).toHaveFocus();
+			expect( screen.queryAllByTestId( /^chart-tooltip-/ ) ).toHaveLength( 0 );
+			// Clearing the selection drops the keyboard test id, so assert on the role too:
+			// visx's own hide is debounced, and the stale datum repaints as a different series.
+			expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+		} );
+
+		// The point count is unchanged by a one-for-one swap, so only the visible set reveals it.
+		it( 'clears the selection when a swap keeps the count but changes which series are visible', async () => {
+			const user = userEvent.setup();
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<BarChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withTooltips
+						chartId="test-equal-count-swap"
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ [
+							{
+								label: 'Series A',
+								data: [
+									{ label: 'Jan', value: 10 },
+									{ label: 'Feb', value: 20 },
+									{ label: 'Mar', value: 30 },
+								],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [
+									{ label: 'Jan', value: 15 },
+									{ label: 'Feb', value: 25 },
+									{ label: 'Mar', value: 35 },
+								],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}{ArrowRight}' );
+			expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series A' );
+
+			// Move focus out of the chart, then swap which series is hidden without changing the count.
+			screen.getByRole( 'application', { name: /bar chart/i } ).blur();
+			act( () => context.setChartHiddenSeries( 'test-equal-count-swap', [ 'Series A' ] ) );
+
+			expect( screen.queryAllByTestId( /^chart-tooltip-/ ) ).toHaveLength( 0 );
+			expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+		} );
+
+		const labelledViews = [
+			{ label: 'Apr', value: 29 },
+			{ label: 'May', value: 19 },
+		];
+		const april = new Date( '2025-04-01T00:00:00Z' );
+		const may = new Date( '2025-05-01T00:00:00Z' );
+
+		it.each( [
+			{
+				name: 'aligned series',
+				views: labelledViews,
+				visitors: [
+					{ label: 'Apr', value: 112 },
+					{ label: 'May', value: 80 },
+				],
+				presses: 3,
+				rows: [ 'Views=19@1', 'Visitors=80@1' ],
+				nearest: 'Views',
+			},
+			{
+				name: 'ragged series',
+				views: labelledViews,
+				visitors: [ { label: 'May', value: 80 } ],
+				presses: 2,
+				rows: [ 'Views=19@1', 'Visitors=80@0' ],
+				nearest: 'Visitors',
+			},
+			{
+				name: 'dated points with empty labels',
+				views: [
+					{ date: april, label: '', value: 29 },
+					{ date: may, label: '', value: 19 },
+				],
+				visitors: [
+					{ date: april, label: '', value: 112 },
+					{ date: may, label: '', value: 80 },
+				],
+				presses: 3,
+				rows: [ 'Views=19@1', 'Visitors=80@1' ],
+				nearest: 'Views',
+			},
+		] )(
+			'gives the keyboard tooltip only the bars at the selected category: $name',
+			async ( { views, visitors, presses, rows, nearest } ) => {
+				const user = userEvent.setup();
+				const renderTooltip = ( { tooltipData }: RenderTooltipParams< DataPointDate > ) => (
+					<div>
+						<span data-testid="nearest">{ tooltipData?.nearestDatum?.key }</span>
+						{ Object.entries( tooltipData?.datumByKey ?? {} ).map(
+							( [ key, { datum, index } ] ) => (
+								<span
+									key={ key }
+									data-testid="row"
+								>{ `${ key }=${ datum.value }@${ index }` }</span>
+							)
+						) }
+					</div>
+				);
+
+				renderWithTheme( {
+					withTooltips: true,
+					renderTooltip,
+					data: [
+						{ label: 'Views', data: views, options: {} },
+						{ label: 'Visitors', data: visitors, options: {} },
+					],
+				} );
+
+				screen.getByRole( 'application', { name: /bar chart/i } ).focus();
+				for ( let i = 0; i < presses; i++ ) {
+					await user.keyboard( '{ArrowRight}' );
+				}
+
+				expect( screen.getAllByTestId( 'row' ).map( row => row.textContent ) ).toEqual(
+					expect.arrayContaining( rows )
+				);
+				expect( screen.getAllByTestId( 'row' ) ).toHaveLength( rows.length );
+				expect( screen.getByTestId( 'nearest' ) ).toHaveTextContent( nearest );
+			}
+		);
+
+		it( 'stops at the last visible slot on a standard chart', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				withTooltips: true,
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'test-hide-primary-standard',
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ label: 'Jan', value: 10 },
+							{ label: 'Feb', value: 20 },
+							{ label: 'Mar', value: 30 },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ label: 'Jan', value: 15 },
+							{ label: 'Feb', value: 25 },
+							{ label: 'Mar', value: 35 },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			await user.click( screen.getByRole( 'button', { name: /Series B: visible/i } ) );
+
+			const chart = screen.getByRole( 'application', { name: /bar chart/i } );
+			chart.focus();
+
+			for ( let i = 0; i < 5; i++ ) {
+				await user.keyboard( '{ArrowRight}' );
+			}
+
+			const tooltips = screen.queryAllByTestId( /^chart-tooltip-/ );
+			expect( tooltips ).toHaveLength( 1 );
+			expect( screen.getByTestId( 'chart-tooltip-2' ) ).toBeInTheDocument();
+			expect( tooltips[ 0 ] ).toHaveTextContent( 'Series A' );
+			expect( tooltips[ 0 ] ).not.toHaveTextContent( 'Series B' );
+			expect( screen.queryByTestId( 'chart-tooltip-3' ) ).not.toBeInTheDocument();
+		} );
+	} );
+} );

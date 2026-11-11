@@ -1,0 +1,7 @@
+vendor/
+node_modules/
+wordpress/
+jetpack_vendor
+.cache
+build
+build-module

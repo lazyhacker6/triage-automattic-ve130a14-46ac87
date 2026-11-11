@@ -1,0 +1,284 @@
+/**
+ * External dependencies
+ */
+import {
+	useStatsClicks,
+	type StatsClicksComparisonItem,
+	type StatsClicksItem,
+	type StatsReportParams,
+} from '@jetpack-premium-analytics/data';
+import {
+	LeaderboardChart,
+	LeaderboardSkeleton,
+	WIDGET_ROW_LIMIT,
+	WidgetBackLink,
+	WidgetRoot,
+	WidgetState,
+	buildLeaderboardRow,
+	resolveLeaderboardRowAction,
+	safeHttpUrl,
+	useWidgetDrillDown,
+	useWidgetRootContext,
+	clicksCsvExporter,
+	type LeaderboardChartData,
+	type ReportParamsFieldAttributes,
+	useReportActions,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { useCallback, useEffect, useMemo } from '@wordpress/element';
+import { __, sprintf } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import { useNoViewsEmptyState } from '../use-no-views-empty-state';
+import styles from './style.module.css';
+import type { WidgetRenderProps } from '@wordpress/widget-primitives';
+
+/** No configurable attributes; the empty record allows host-provided fields. */
+export type ClicksAttributes = Record< never, never >;
+
+type ClicksRenderAttributes = ClicksAttributes & Partial< ReportParamsFieldAttributes >;
+type ClicksWidgetProps = WidgetRenderProps< ClicksRenderAttributes >;
+
+const DATA_FORMAT = { type: 'number' as const, options: { useMultipliers: true, decimals: 0 } };
+
+/**
+ * A single normalized click row, ready for the leaderboard.
+ */
+export type ClickRow = {
+	/**
+	 * Link or domain label.
+	 */
+	label: string;
+	/**
+	 * Click count for the selected period.
+	 */
+	value: number;
+	/**
+	 * Click count for the comparison period.
+	 */
+	previousValue?: number;
+	/**
+	 * External destination URL.
+	 */
+	href?: string;
+	/**
+	 * Optional favicon URL.
+	 */
+	icon?: string | null;
+	/**
+	 * Child clicked links for drill-down.
+	 */
+	children?: ClickRow[];
+	/**
+	 * Whether the child rows have any matching comparison-period rows.
+	 */
+	childrenHaveComparison?: boolean;
+};
+
+function getItemLabel( item: StatsClicksComparisonItem | StatsClicksItem ): string {
+	if ( typeof item.label === 'string' && item.label ) {
+		return item.label;
+	}
+
+	return item.link ?? '';
+}
+
+/**
+ * Maps a merged data-layer row (comparison matching and the row cap happen in
+ * `mergeStatsClicksComparisonRows`) onto the widget's row shape.
+ */
+export function toClickRow( item: StatsClicksComparisonItem ): ClickRow {
+	const href = safeHttpUrl( item.link );
+
+	return {
+		label: getItemLabel( item ),
+		value: item.views,
+		previousValue: item.previousValue,
+		...( href ? { href } : {} ),
+		icon: item.icon,
+		children: item.children?.map( toClickRow ),
+		...( item.childrenHaveComparison ? { childrenHaveComparison: true } : {} ),
+	};
+}
+
+/**
+ * Maps normalized click rows onto the shape `LeaderboardChart` expects.
+ */
+function buildLeaderboardData(
+	rows: ClickRow[],
+	onDrillDown?: ( row: ClickRow ) => void
+): LeaderboardChartData {
+	return rows.map( ( row, index ) => {
+		const hasChildren = !! row.children?.length;
+
+		return {
+			id: `${ index }-${ row.href ?? row.label }`,
+			...buildLeaderboardRow( {
+				label: row.label,
+				media: { kind: 'favicon', url: row.icon ?? undefined },
+				action: resolveLeaderboardRowAction( {
+					href: row.href,
+					hasChildren,
+					drillDown: onDrillDown
+						? {
+								onClick: () => onDrillDown( row ),
+								ariaLabel: sprintf(
+									/* translators: %s is the clicked link or domain label. */
+									__( 'View clicked links for %s', 'jetpack-premium-analytics-pkg' ),
+									row.label
+								),
+							}
+						: undefined,
+				} ),
+			} ),
+			currentValue: row.value,
+			previousValue: row.previousValue,
+		};
+	} );
+}
+
+export type ClicksLeaderboardProps = {
+	/**
+	 * Normalized click rows.
+	 */
+	rows?: ClickRow[];
+	/**
+	 * When true, render comparison deltas.
+	 */
+	withComparison?: boolean;
+	/**
+	 * Callback fired when a row with child links is selected.
+	 */
+	onDrillDown?: ( row: ClickRow ) => void;
+};
+
+/**
+ * Presentational leaderboard for the Clicks widget.
+ */
+export function ClicksLeaderboard( {
+	rows = [],
+	withComparison = false,
+	onDrillDown,
+}: ClicksLeaderboardProps ) {
+	return (
+		<LeaderboardChart
+			data={ buildLeaderboardData( rows, onDrillDown ) }
+			withComparison={ withComparison }
+			withOverlayLabel
+			showLegend={ false }
+			dataFormat={ DATA_FORMAT }
+			columns={ { label: __( 'Links', 'jetpack-premium-analytics-pkg' ), metric: 'clicks' } }
+		/>
+	);
+}
+
+/**
+ * Clicks widget inner component. Reads report params from WidgetRoot context
+ * and renders the leaderboard, with drill-down into a link's child clicks.
+ */
+function ClicksInner() {
+	const { reportParams } = useWidgetRootContext();
+	const {
+		drillDownItem: selectedClickLabel,
+		drillDown: selectClick,
+		resetDrillDown: clearSelectedClick,
+	} = useWidgetDrillDown< string >();
+	const statsParams = {
+		...reportParams,
+		max: WIDGET_ROW_LIMIT,
+	} as StatsReportParams;
+	const { primary, comparisonRows, hasComparison, isLoading, isFetching, isError, refetch } =
+		useStatsClicks( statsParams, { maxRows: WIDGET_ROW_LIMIT } );
+
+	const rows = useMemo(
+		() => ( comparisonRows?.rows ?? [] ).map( toClickRow ),
+		[ comparisonRows ]
+	);
+	const selectedClick = useMemo(
+		() => rows.find( row => row.label === selectedClickLabel ) ?? null,
+		[ rows, selectedClickLabel ]
+	);
+	const isDrillDown = !! selectedClick?.children?.length;
+	const activeRows = isDrillDown ? ( selectedClick.children ?? [] ) : rows;
+	const withComparison = isDrillDown ? !! selectedClick?.childrenHaveComparison : hasComparison;
+
+	// Clear the stored selection only once data has settled without a drillable
+	// match, so it can't resurface on a later refetch (WOOA7S-1666) and a valid
+	// selection survives in-flight fetches and transient failures.
+	useEffect( () => {
+		if ( selectedClickLabel && ! isDrillDown && ! isLoading && ! isFetching && ! isError ) {
+			clearSelectedClick();
+		}
+	}, [ selectedClickLabel, isDrillDown, isLoading, isFetching, isError, clearSelectedClick ] );
+
+	const emptyState = useNoViewsEmptyState(
+		{ isLoading, isError, isEmpty: rows.length === 0 },
+		__( 'You don’t have clicked links recorded yet.', 'jetpack-premium-analytics-pkg' )
+	);
+
+	const handleDrillDown = useCallback(
+		( row: ClickRow ) => {
+			selectClick( row.label );
+		},
+		[ selectClick ]
+	);
+
+	const backLink = isDrillDown ? (
+		<WidgetBackLink
+			label={ __( 'All clicks', 'jetpack-premium-analytics-pkg' ) }
+			ariaLabel={ __( 'View all clicks', 'jetpack-premium-analytics-pkg' ) }
+			onClick={ clearSelectedClick }
+		/>
+	) : null;
+
+	useReportActions( {
+		csv: {
+			exporter: clicksCsvExporter,
+			status: { isLoading, isFetching, isError: primary.isError },
+			rowCount: rows.length,
+		},
+	} );
+
+	return (
+		<div className={ styles.content }>
+			{ backLink }
+			<WidgetState
+				isLoading={ emptyState.isLoading }
+				isFetching={ isFetching }
+				// `placeholderData` keeps the prior period's rows on screen while `isError`
+				// flips true, so a transient refetch failure should not replace them.
+				isError={ rows.length === 0 && isError }
+				isEmpty={ activeRows.length === 0 }
+				error={ {
+					description: __(
+						"We couldn't load clicks. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					),
+					actions: [ { label: __( 'Retry', 'jetpack-premium-analytics-pkg' ), onClick: refetch } ],
+				} }
+				empty={ emptyState.empty }
+				renderLoading={ <LeaderboardSkeleton rows={ WIDGET_ROW_LIMIT } /> }
+			>
+				<ClicksLeaderboard
+					rows={ activeRows }
+					withComparison={ withComparison }
+					onDrillDown={ isDrillDown ? undefined : handleDrillDown }
+				/>
+			</WidgetState>
+		</div>
+	);
+}
+
+/**
+ * Shows the most-clicked external links as a ranked leaderboard. Date range
+ * comes from the shared dashboard date picker via WidgetRoot.
+ */
+export default function ClicksWidget( { attributes = {} }: ClicksWidgetProps ) {
+	return (
+		<WidgetRoot attributes={ attributes }>
+			<div className={ styles.root }>
+				<ClicksInner />
+			</div>
+		</WidgetRoot>
+	);
+}

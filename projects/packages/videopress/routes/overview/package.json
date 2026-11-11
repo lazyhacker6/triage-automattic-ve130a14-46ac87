@@ -1,0 +1,8 @@
+{
+	"version": "1.0.0",
+	"private": true,
+	"route": {
+		"path": "/stats",
+		"page": "jetpack-videopress-dashboard"
+	}
+}

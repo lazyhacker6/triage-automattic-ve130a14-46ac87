@@ -1,0 +1,260 @@
+import { __, _n, sprintf } from '@wordpress/i18n';
+import { useMemo } from 'react';
+import {
+	protectCardShieldInactive as ShieldInactive,
+	protectCardShieldOff as ShieldOff,
+	protectCardShieldPartial as ShieldPartial,
+	protectCardShieldSuccess as ShieldSuccess,
+} from '../../../assets/inline-svgs';
+import useProduct from '../../../data/products/use-product';
+import useMyJetpackConnection from '../../../hooks/use-my-jetpack-connection';
+import { ProtectInfoPopover } from './info-popover';
+import { useProtectTooltipCopy } from './use-protect-tooltip-copy';
+import type { FC } from 'react';
+
+interface ScanAndThreatStatusProps {
+	data: ProtectData;
+}
+
+export const ScanAndThreatStatus: FC< ScanAndThreatStatusProps > = ( { data } ) => {
+	const slug = 'protect';
+	const { detail } = useProduct( slug );
+	const { isPluginActive = false, hasPaidPlanForProduct: hasProtectPaidPlan } = detail || {};
+	const { isSiteConnected } = useMyJetpackConnection();
+
+	const {
+		plugins,
+		themes,
+		num_threats: numThreats = 0,
+		last_scan_failed: lastScanFailed = false,
+		last_checked: lastChecked = null,
+		status: scanStatus,
+	} = data?.scanData || {};
+
+	const criticalScanThreatCount = useMemo( () => {
+		const { core, database, files, num_plugins_threats, num_themes_threats } = data?.scanData || {};
+		const pluginsThreats = num_plugins_threats
+			? plugins.reduce( ( accum, plugin ) => accum.concat( plugin.threats ), [] )
+			: [];
+		const themesThreats = num_themes_threats
+			? themes.reduce( ( accum, theme ) => accum.concat( theme.threats ), [] )
+			: [];
+		const allThreats = [
+			...pluginsThreats,
+			...themesThreats,
+			...( core?.threats ?? [] ),
+			...( database ?? [] ),
+			...( files ?? [] ),
+		];
+		return allThreats.reduce(
+			( accum, threat ) => ( threat.severity >= 5 ? accum + 1 : accum ),
+			0
+		);
+	}, [ plugins, themes, data?.scanData ] );
+
+	if ( isPluginActive && isSiteConnected ) {
+		if ( hasProtectPaidPlan ) {
+			if ( numThreats ) {
+				return (
+					<ThreatStatus
+						data={ data }
+						numThreats={ numThreats }
+						criticalThreatCount={ criticalScanThreatCount }
+					/>
+				);
+			}
+			// No scan on record yet, so there's nothing to call secure.
+			if ( ! lastChecked ) {
+				return <ScanStatus data={ data } status="not-scanned" />;
+			}
+			return <ScanStatus data={ data } status={ lastScanFailed ? 'incomplete' : 'success' } />;
+		}
+		return numThreats ? (
+			<ThreatStatus data={ data } numThreats={ numThreats } />
+		) : (
+			<ScanStatus data={ data } status={ scanStatus === 'disabled' ? 'off' : 'partial' } />
+		);
+	}
+
+	return <ScanStatus data={ data } status="off" />;
+};
+
+interface ThreatStatusProps {
+	data: ProtectData;
+	numThreats: number;
+	criticalThreatCount?: number;
+}
+
+const ThreatStatus: FC< ThreatStatusProps > = ( { data, numThreats, criticalThreatCount } ) => {
+	const tooltipContent = useProtectTooltipCopy( data );
+	const { scanThreatsTooltip } = tooltipContent;
+
+	if ( criticalThreatCount ) {
+		return (
+			<>
+				<div className="value-section__heading">
+					{ __( 'Threats', 'jetpack-my-jetpack' ) }
+					<ProtectInfoPopover
+						label={ __( 'Threats', 'jetpack-my-jetpack' ) }
+						title={ scanThreatsTooltip.title }
+						text={ scanThreatsTooltip.text }
+						tracksEventProps={ {
+							location: 'scan',
+							has_paid_plan: true,
+							threats: numThreats,
+						} }
+						critical
+						triggerContent={ criticalThreatCount }
+						triggerLabel={ sprintf(
+							/* translators: %d is the number of critical threats found by the last scan. */
+							_n(
+								'%d critical threat. More about threats',
+								'%d critical threats. More about threats',
+								criticalThreatCount,
+								'jetpack-my-jetpack'
+							),
+							criticalThreatCount
+						) }
+					/>
+				</div>
+				<div className="value-section__data">
+					<div className="scan-threats__threat-count">{ numThreats }</div>
+				</div>
+			</>
+		);
+	}
+
+	return (
+		<>
+			<div className="value-section__heading">
+				{ __( 'Threats', 'jetpack-my-jetpack' ) }
+				<ProtectInfoPopover
+					label={ __( 'Threats', 'jetpack-my-jetpack' ) }
+					title={ scanThreatsTooltip.title }
+					text={ scanThreatsTooltip.text }
+					tracksEventProps={ {
+						location: 'threats',
+						has_paid_plan: true,
+						threats: numThreats,
+					} }
+				/>
+			</div>
+			<div className="value-section__data">
+				<div className="scan-threats__threat-count">{ numThreats }</div>
+			</div>
+		</>
+	);
+};
+
+interface ScanStatusProps {
+	data: ProtectData;
+	status: 'success' | 'incomplete' | 'not-scanned' | 'partial' | 'off';
+}
+
+const ScanStatus: FC< ScanStatusProps > = ( { data, status } ) => {
+	const tooltipContent = useProtectTooltipCopy( data );
+	const { scanThreatsTooltip } = tooltipContent;
+
+	if ( status === 'success' ) {
+		return (
+			<>
+				<div className="value-section__heading">{ __( 'Scan', 'jetpack-my-jetpack' ) }</div>
+				<div className="value-section__data">
+					<div>
+						<img
+							className="value-section__status-icon"
+							src={ ShieldSuccess }
+							alt={ __( 'Shield icon - Scan Status: Secure', 'jetpack-my-jetpack' ) }
+						/>
+					</div>
+					<div className="value-section__status-text">{ __( 'Secure', 'jetpack-my-jetpack' ) }</div>
+				</div>
+			</>
+		);
+	}
+	if ( status === 'incomplete' ) {
+		return (
+			<>
+				<div className="value-section__heading">{ __( 'Scan', 'jetpack-my-jetpack' ) }</div>
+				<div className="value-section__data">
+					<div>
+						<img
+							className="value-section__status-icon"
+							src={ ShieldPartial }
+							alt={ __( 'Shield icon - Scan Status: Incomplete', 'jetpack-my-jetpack' ) }
+						/>
+					</div>
+					<div className="value-section__status-text">
+						{ __( 'Incomplete', 'jetpack-my-jetpack' ) }
+					</div>
+				</div>
+			</>
+		);
+	}
+	if ( status === 'not-scanned' ) {
+		return (
+			<>
+				<div className="value-section__heading">{ __( 'Scan', 'jetpack-my-jetpack' ) }</div>
+				<div className="value-section__data">
+					<div>
+						<img
+							className="value-section__status-icon"
+							src={ ShieldInactive }
+							alt={ __( 'Shield icon - Scan Status: Not scanned yet', 'jetpack-my-jetpack' ) }
+						/>
+					</div>
+					<div className="value-section__status-text">
+						{ __( 'Not scanned yet', 'jetpack-my-jetpack' ) }
+					</div>
+				</div>
+			</>
+		);
+	}
+	if ( status === 'partial' ) {
+		return (
+			<>
+				<div className="value-section__heading">
+					{ __( 'Scan', 'jetpack-my-jetpack' ) }
+					<ProtectInfoPopover
+						label={ __( 'Scan', 'jetpack-my-jetpack' ) }
+						title={ scanThreatsTooltip.title }
+						text={ scanThreatsTooltip.text }
+						tracksEventProps={ {
+							location: 'scan',
+							status: status,
+							has_paid_plan: false,
+							threats: 0,
+						} }
+					/>
+				</div>
+				<div className="value-section__data">
+					<div>
+						<img
+							className="value-section__status-icon"
+							src={ ShieldPartial }
+							alt={ __( 'Shield icon - Scan Status: Partial', 'jetpack-my-jetpack' ) }
+						/>
+					</div>
+					<div className="value-section__status-text">
+						{ __( 'Partial', 'jetpack-my-jetpack' ) }
+					</div>
+				</div>
+			</>
+		);
+	}
+	return (
+		<>
+			<div className="value-section__heading">{ __( 'Scan', 'jetpack-my-jetpack' ) }</div>
+			<div className="value-section__data">
+				<div>
+					<img
+						className="value-section__status-icon"
+						src={ ShieldOff }
+						alt={ __( 'Shield icon - Scan Status: Off', 'jetpack-my-jetpack' ) }
+					/>
+				</div>
+				<div className="value-section__status-text">{ __( 'Off', 'jetpack-my-jetpack' ) }</div>
+			</div>
+		</>
+	);
+};

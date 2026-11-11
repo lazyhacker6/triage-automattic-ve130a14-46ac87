@@ -1,0 +1,28 @@
+.jetpack-external-media-header__view {
+	margin-block-end: var(--wpds-dimension-gap-lg);
+}
+
+.jetpack-external-media-header__account-name {
+	max-inline-size: 190px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.jetpack-external-media__google-photos-picker {
+	padding-block-end: var(--wpds-dimension-padding-2xl);
+}
+
+.jetpack-external-media-auth {
+	position: absolute;
+	inset: 0;
+	max-inline-size: 480px;
+	margin-inline: auto;
+	overflow: auto;
+	text-align: center;
+}
+
+.jetpack-external-media__google-photos-loading {
+	position: absolute;
+	inset: 0;
+}

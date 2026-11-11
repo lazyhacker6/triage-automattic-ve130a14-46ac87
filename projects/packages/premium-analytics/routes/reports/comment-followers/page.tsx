@@ -1,0 +1,148 @@
+/**
+ * External dependencies
+ */
+import { type StatsCommentFollowersItem } from '@jetpack-premium-analytics/data';
+import { Icon, Text } from '@jetpack-premium-analytics/externals';
+import { jetpack } from '@jetpack-premium-analytics/icons';
+import { StatsBreadcrumbs } from '@jetpack-premium-analytics/ui';
+import {
+	MetricValue,
+	ReportPageLayout,
+	ReportPageSection,
+	ReportErrorState,
+	ReportRecordsTable,
+	ReportCsvAction,
+	useReportCsvExport,
+	type CsvColumn,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { Page } from '@wordpress/admin-ui';
+import { useMemo } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+import { type JSX } from 'react';
+/**
+ * Internal dependencies
+ */
+import reportPageStyles from '../page.module.scss';
+import { REPORTS } from '../registry';
+import { getCommentFollowersFields, useCommentFollowersReportRecords } from './config';
+import styles from './page.module.css';
+
+/** Default records-table view: sort by subscribers, other columns auto-sized. */
+const RECORDS_VIEW = {
+	sort: { field: 'subscribers', direction: 'desc' as const },
+	layout: {
+		styles: {
+			post: { width: '100%' },
+			subscribers: { align: 'end' as const },
+		},
+	},
+};
+
+const sortCommentFollowerCsvRows = ( a: StatsCommentFollowersItem, b: StatsCommentFollowersItem ) =>
+	b.followers - a.followers;
+
+/**
+ * Stable row id for the records table.
+ *
+ * @param item - The comment-followers row.
+ * @return The row id.
+ */
+function getCommentFollowerRowId( item: StatsCommentFollowersItem ): string {
+	return String( item.id ?? item.link ?? item.label );
+}
+
+/**
+ * Legacy all-time paginated list with no date buckets: only the breadcrumb header and
+ * records table render, no date filters, tabs, or performance chart.
+ *
+ * @return The Comments Subscribers report page.
+ */
+function CommentFollowersReport(): JSX.Element {
+	const records = useCommentFollowersReportRecords();
+	const fields = useMemo( () => getCommentFollowersFields(), [] );
+	const csvColumns = useMemo< CsvColumn< StatsCommentFollowersItem >[] >(
+		() => [
+			{
+				label: __( 'Post', 'jetpack-premium-analytics-pkg' ),
+				getValue: row => String( row.label ?? '' ),
+			},
+			{
+				label: __( 'Subscribers', 'jetpack-premium-analytics-pkg' ),
+				getValue: row => row.followers,
+			},
+			{ label: __( 'URL', 'jetpack-premium-analytics-pkg' ), getValue: row => row.link ?? '' },
+		],
+		[]
+	);
+	const {
+		canExport,
+		rows: csvRows,
+		filename: csvFilename,
+	} = useReportCsvExport( {
+		rows: records.rows,
+		filenamePrefix: 'comment-subscribers',
+		status: records,
+		sort: sortCommentFollowerCsvRows,
+	} );
+
+	const { getLabel } = REPORTS[ 'comment-followers' ];
+	// The endpoint reports site-wide followers apart from the per-post rows, so either can exist alone.
+	const hasAllPostsFollowers = ( records.allPostsFollowers ?? 0 ) > 0;
+	const hasPostRows = records.rows.length > 0;
+
+	return (
+		<Page
+			className={ reportPageStyles.page }
+			visual={ <Icon icon={ jetpack } /> }
+			breadcrumbs={ <StatsBreadcrumbs items={ [ { label: getLabel() } ] } /> }
+			actions={
+				canExport ? (
+					<ReportCsvAction columns={ csvColumns } rows={ csvRows } filename={ csvFilename } />
+				) : undefined
+			}
+		>
+			<ReportPageLayout title={ getLabel() }>
+				<ReportErrorState
+					status={ records }
+					retryDescription={ __(
+						"We couldn't load subscribers. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					) }
+				>
+					{ ( hasAllPostsFollowers || hasPostRows ) && (
+						<ReportPageSection className={ styles.summary }>
+							<Text variant="heading-md" render={ <h3 /> }>
+								{ __( 'All Posts', 'jetpack-premium-analytics-pkg' ) }
+							</Text>
+							<MetricValue
+								value={ records.allPostsFollowers ?? 0 }
+								dataFormat={ { type: 'number' } }
+							/>
+						</ReportPageSection>
+					) }
+					{ ( hasPostRows || ! hasAllPostsFollowers ) && (
+						<ReportRecordsTable< StatsCommentFollowersItem >
+							data={ records.rows }
+							fields={ fields }
+							getItemId={ getCommentFollowerRowId }
+							isLoading={ records.isLoading }
+							isFetching={ records.isFetching }
+							initialView={ RECORDS_VIEW }
+							searchLabel={ __( 'Search posts', 'jetpack-premium-analytics-pkg' ) }
+						/>
+					) }
+				</ReportErrorState>
+			</ReportPageLayout>
+		</Page>
+	);
+}
+
+/**
+ * Registry entry point; React Query and error handling come from the shared
+ * report stage that renders this.
+ *
+ * @return The Comments Subscribers report page.
+ */
+export default function CommentFollowersReportPage(): JSX.Element {
+	return <CommentFollowersReport />;
+}

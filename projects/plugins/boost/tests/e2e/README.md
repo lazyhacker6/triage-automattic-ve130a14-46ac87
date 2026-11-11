@@ -1,0 +1,175 @@
+# Jetpack Boost End-to-End tests
+
+Automated end-to-end acceptance tests for the Jetpack Boost plugin.
+
+**Note**: The Jetpack Boost E2E framework and setup relies heavily on the [e2e commons package](../../../../../tools/e2e-commons). So please familiarise yourself with it first. Also, you might want to review the Jetpack E2E [documentation](../../../jetpack/tests/e2e/README.md) which does contains a lot of information regarding the E2E framework and setup which is not repeated here for the sake of brevity.
+
+## Boost specific information
+
+- [Pre-requisites](#pre-requisites)
+- [Getting started](#getting-started)
+
+## Pre-requisites
+
+- This readme assumes that `node`, `pnpm` and `docker` are already installed on your machine.
+- Build Jetpack Boost and its dependencies using the [development guide](../../docs/DEVELOPEMENT_GUIDE.md#build-the-project).
+- Run `pnpm install` from the Jetpack Boost E2E tests directory. This command install all the required dependencies
+
+Jetpack Boost E2E tests also rely on an encrypted configuration file, which is included in the [e2e commons package](../../../../../tools/e2e-commons) config folder as [`encrypted.enc`](../../../../../tools/e2e-commons/config/encrypted.enc). To be able to run tests - that file should be decrypted first.
+
+To decrypt the config file (a8c only):
+
+- Find a decryption key. Search secret store for "E2E Jetpack CONFIG_KEY"
+- From the Jetpack Boost E2E tests directory, run `CONFIG_KEY=YOUR_KEY pnpm config:decrypt`. This command should create a new file `local.cjs` in the Jetpack Boost E2E tests config folder.
+
+## Getting Started
+
+Typically, the workflow is the same as the one described in the Jetpack E2E [documentation](../../../jetpack/tests/e2e/README.md). You can follow the same workflow but running the commands inside the Jetpack Boost E2E tests folder.
+
+However, below is a quick reminder of the critical steps to run the tests.
+
+From the root of the repo (this has to be done only once or when pulling new changes):
+
+1. run `pnpm install` - This command will install the monorepo NPM dependencies.
+2. run `jetpack build plugins/jetpack` - This command will install Jetpack NPM and Composer dependencies as well as building the asset files.
+3. Build Boost using the [development guide](../../docs/DEVELOPEMENT_GUIDE.md#build-the-project).
+
+From the `projects/plugins/boost/tests/e2e` folder:
+
+4. run `pnpm install` - This will install the Jetpack Boost E2E tests NPM dependencies.
+5. run `pnpm run config:decrypt` - This command will decrypt the config and create/overwrite the local test config file.
+6. run `pnpm run env:up && pnpm run tunnel:up` - This command will start the e2e testing environment and the tunnel.
+7. run `pnpm run test:run` - This command will run the e2e tests.
+
+However, Boost has some shortcuts to get the environment started and run all the tests by running the following commands from the root of the Jetpack Boost folder:
+
+- `pnpm test-e2e:decrypt-config` - This command will decrypt the config and create/overwrite the local test config file.
+- `pnpm test-e2e:start` - This command will start the e2e testing environment and the tunnel.
+- `pnpm test-e2e:run` - This command will run the e2e tests.
+- `pnpm test-e2e:stop` - This command will stop the e2e testing environment.
+
+## E2E build projects
+
+`build-projects.json` lists the projects built for the suites and the reasons for skipping others.
+Every build-bearing direct dependency of Boost or Jetpack must be in `build` or `skip`.
+Unlisted Boost dependencies fail the check; Jetpack-only dependencies warn and build automatically.
+Skip reasons record what was checked, including source consumption or suite pages/state and unverified conditions.
+From this directory, run `node build.mjs --check` to validate the lists and print the build targets without building.
+
+## History tooltip rendering regression
+
+`specs/base/history-tooltip-overlap.test.ts` bundles the production history card, Charts, and dashboard styles with deterministic data. It uses the runner's Chromium and includes My Jetpack's global tooltip styles to check both daily bar charts, the recorded-day popover's scores, dots and hoverability, empty days, and narrow-screen bounds.
+
+After installing the monorepo dependencies, run it without WordPress or authentication setup from this directory:
+
+```bash
+TEST_SITE=fixture NODE_CONFIG='{"testSites":{"fixture":{"url":"http://boost.test","username":"unused","password":"unused"}}}' \
+  pnpm run test:run specs/base/history-tooltip-overlap.test.ts --project='jetpack boost e2e' --no-deps
+```
+
+## Modern Settings tooltip clipping regression
+
+`specs/base/modern-settings-tooltip-clip.test.ts` bundles the modern Settings layout, shared
+`@wordpress/ui` collapsible cards and a fixture tooltip containing the modern upgrade
+notice, so the card's `overflow: clip` is the real one. The legacy case uses the Critical CSS
+premium tooltip. It needs no WordPress. It uses the runner's Chromium and
+checks that the popover is whole and on screen at
+1440, 782 and 390 in both directions, that the legacy dashboard keeps its inline popover and its
+70vw mobile width, and that focus and Escape still work. Run it with the command above,
+substituting this spec's path.
+
+## Fixtures and Utilities
+
+A fixture-based architecture was implemented with custom utilities for most common operations.
+
+### Available Fixtures (specific to Boost tests)
+
+- `boostUtils` - Boost-specific utility functions (module control, mocking, environment setup). Extends the e2e-commons `testUtils` fixture, which offers Jetpack, WordPress or general environment utilities.
+- `jetpackBoostPage` - Pre-configured Jetpack Boost page object for interacting with the Jetpack Boost admin interface.
+
+### `boostUtils` Usage
+
+```typescript
+test('My test', async ({ boostUtils, jetpackBoostPage, page }) => {
+  // Environment setup
+  await boostUtils.resetEnvironment();
+  
+  // Module management
+  await boostUtils.activateBoostModule(['critical_css', 'render_blocking_js']);
+  await boostUtils.deactivateBoostModule('page_cache');
+  
+  // Connection management
+  await boostUtils.mockConnection(); // Mocks the connection
+  // OR for real connection:
+  await boostUtils.connectIfNeeded(page); // Go through the real connection flow
+  
+  // Speed score management
+  await boostUtils.mockSpeedScore(); // Fast, consistent scores
+  // OR for real API:
+  await boostUtils.unMockSpeedScore(); // Real PageSpeed API calls
+  
+  // Premium features
+  await boostUtils.mockPremiumFeatures(['cornerstone-10-pages']);
+  
+  // WordPress CLI commands
+  await boostUtils.executeWpCommand('option set permalink_structure "/%postname%/"');
+});
+```
+
+### `jetpackBoostPage` Usage
+
+```typescript
+test('Page interactions', async ({ jetpackBoostPage, page }) => {
+  // Navigate to Boost admin
+  await jetpackBoostPage.visit();
+  
+  // Module interactions
+  await jetpackBoostPage.toggleModule('critical_css', true);
+});
+```
+
+### ⚠️ Important: Mock Cleanup
+
+Always clean up mocked states in teardown hooks to prevent test isolation issues:
+
+```typescript
+test.beforeAll(async ({ boostUtils }) => {
+  await boostUtils.mockConnection();
+  await boostUtils.mockSpeedScore();
+  await boostUtils.mockPremiumFeatures(['feature1']);
+});
+
+test.afterAll(async ({ boostUtils }) => {
+  // Clean up all mocks
+  await boostUtils.unMockConnection();
+  await boostUtils.unMockSpeedScore();
+  await boostUtils.unMockPremiumFeatures();
+});
+```
+
+### Dashboard modernization
+
+The modern dashboard is the default. The `e2e-dashboard-modernization` plugin is
+mounted in the Docker E2E environment to switch dashboards. Use
+`boostUtils.setDashboardModernization( false )` to force the legacy dashboard, or
+pass `true` to force the modern one. Call
+`boostUtils.resetDashboardModernization()` to deactivate the fixture, remove its
+option, and return to the modern default; `resetEnvironment()` does this too.
+
+To see the legacy dashboard locally, run these commands from the monorepo root
+after starting your E2E environment:
+
+```sh
+pnpm jetpack docker --type e2e --name t1 wp -- plugin activate e2e-dashboard-modernization
+pnpm jetpack docker --type e2e --name t1 wp -- option update e2e_boost_dashboard_modernization 0
+```
+
+Open `/wp-admin/admin.php?page=jetpack-boost`. Restore the modern dashboard with:
+
+```sh
+pnpm jetpack docker --type e2e --name t1 wp -- plugin deactivate e2e-dashboard-modernization
+```
+
+Run the modern dashboard foundation and feature tests from this directory with
+`pnpm test:run specs/modernization`. CI discovers this directory through
+`.github/files/e2e-tests/e2e-matrix.js`.

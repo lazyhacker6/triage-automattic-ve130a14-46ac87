@@ -1,0 +1,22 @@
+.notice {
+	z-index: 1;
+
+	&.notice--info {
+		margin-bottom: calc(var(--spacing-base) * 3); // 24px
+	}
+
+	&.notice--floating {
+		position: fixed;
+		top: calc(var(--spacing-base) * 6); // 48px
+		right: calc(var(--spacing-base) * 3); // 24px
+		margin-left: calc(var(--spacing-base) * 3); // 24px
+
+		// The notice sets `container-type: inline-size`, so it reports no width to
+		// this shrink-to-fit fixed box and collapses to a sliver.
+		container-type: normal;
+
+		@media ( max-width: 782px ) {
+			top: calc(var(--spacing-base) * 8); // 72px
+		}
+	}
+}

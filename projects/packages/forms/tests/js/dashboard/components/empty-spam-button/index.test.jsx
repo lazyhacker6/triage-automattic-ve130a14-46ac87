@@ -1,0 +1,265 @@
+/**
+ * External dependencies
+ */
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+// Mock React Router
+await jest.unstable_mockModule( 'react-router', () => ( {
+	useSearchParams: () => [ new URLSearchParams(), jest.fn() ],
+} ) );
+
+// Mock WordPress dependencies
+await jest.unstable_mockModule( '@wordpress/components', () => ( {
+	Button: props => {
+		const { __next40pxDefaultSize, accessibleWhenDisabled, isBusy, showTooltip, ...buttonProps } =
+			props;
+		return (
+			<button type="button" aria-label={ props.label } { ...buttonProps }>
+				{ props.children }
+			</button>
+		);
+	},
+} ) );
+
+const actualIcons = await import( '@wordpress/icons' );
+await jest.unstable_mockModule( '@wordpress/icons', () => ( {
+	...actualIcons,
+	trash: 'trash-icon-mock',
+} ) );
+
+await jest.unstable_mockModule( '@wordpress/core-data', () => ( {
+	useEntityRecords: jest.fn(),
+	store: 'core',
+} ) );
+
+await jest.unstable_mockModule( '@wordpress/notices', () => ( {
+	store: 'notices',
+} ) );
+
+await jest.unstable_mockModule( '@wordpress/api-fetch', () => ( {
+	default: jest.fn( req => {
+		if ( req.path && req.path.includes( '/wp/v2/feedback/counts' ) ) {
+			return Promise.resolve( { inbox: 0, spam: 1, trash: 0 } );
+		}
+		return Promise.resolve( { deleted: 1 } );
+	} ),
+} ) );
+
+await jest.unstable_mockModule( '@automattic/jetpack-analytics', () => ( {
+	default: {
+		tracks: {
+			recordEvent: jest.fn(),
+		},
+	},
+} ) );
+
+// Mock the dashboard store
+await jest.unstable_mockModule( '../../../../../src/dashboard/store', () => ( {
+	store: 'dashboard',
+} ) );
+
+// Import actual lodash and re-export it - needed for use-inbox-data hook
+const actualLodash = await import( 'lodash' );
+await jest.unstable_mockModule( 'lodash', () => ( {
+	...( actualLodash.default || actualLodash ),
+} ) );
+
+// Mock WordPress data
+await jest.unstable_mockModule( '@wordpress/data', () => {
+	const mockDispatch = {
+		createSuccessNotice: jest.fn(),
+		createInfoNotice: jest.fn(),
+		removeNotice: jest.fn(),
+		createErrorNotice: jest.fn(),
+		setCounts: jest.fn(),
+		setCurrentQuery: jest.fn(),
+		setSelectedResponses: jest.fn(),
+		invalidateCounts: jest.fn(),
+	};
+
+	const mockSelect = {
+		getSelectedResponsesCount: jest.fn().mockReturnValue( 0 ),
+		getSelectedResponsesFromCurrentDataset: jest.fn().mockReturnValue( [] ),
+		getCurrentStatus: jest.fn().mockReturnValue( 'trash' ),
+		getCurrentQuery: jest.fn().mockReturnValue( {} ),
+		getFilters: jest.fn().mockReturnValue( {} ),
+		getCounts: jest.fn().mockReturnValue( { inbox: 0, spam: 1, trash: 0 } ),
+		getInboxCount: jest.fn().mockReturnValue( 0 ),
+		getSpamCount: jest.fn().mockReturnValue( 1 ),
+		getTrashCount: jest.fn().mockReturnValue( 0 ),
+		getInvalidRecords: jest.fn().mockReturnValue( new Set() ),
+		hasPendingActions: jest.fn().mockReturnValue( false ),
+	};
+
+	return {
+		useDispatch: jest.fn( store => {
+			if ( store === 'notices' ) {
+				return mockDispatch;
+			}
+			if ( store === 'core' ) {
+				return {
+					invalidateResolutionForStoreSelector: jest.fn(),
+				};
+			}
+			if ( store === 'dashboard' ) {
+				return {
+					setCounts: mockDispatch.setCounts,
+					setCurrentQuery: mockDispatch.setCurrentQuery,
+					setSelectedResponses: mockDispatch.setSelectedResponses,
+					invalidateCounts: mockDispatch.invalidateCounts,
+					markRecordsAsInvalid: jest.fn(),
+				};
+			}
+			return {};
+		} ),
+		useSelect: jest.fn( callback => callback( () => mockSelect ) ),
+		store: {
+			noticesStore: 'notices',
+		},
+	};
+} );
+
+// Disable console.error for specific known warnings
+/* eslint-disable no-console */
+const originalError = console.error;
+beforeAll( () => {
+	console.error = ( ...args ) => {
+		if (
+			typeof args[ 0 ] === 'string' &&
+			( args[ 0 ].includes( 'React does not recognize the' ) ||
+				args[ 0 ].includes( 'inside a test was not wrapped in act' ) )
+		) {
+			return;
+		}
+		originalError.call( console, ...args );
+	};
+} );
+
+afterAll( () => {
+	console.error = originalError;
+} );
+/* eslint-enable no-console */
+
+// Dynamically import the component after mocks are set up
+const EmptySpamButtonModule =
+	await import( '../../../../../src/dashboard/components/empty-spam-button' );
+const EmptySpamButton = EmptySpamButtonModule.default;
+const { labelForScope } = EmptySpamButtonModule;
+
+const DashboardSearchParamsModule =
+	await import( '../../../../../src/dashboard/router/dashboard-search-params-context' );
+const { DashboardSearchParamsProvider } = DashboardSearchParamsModule;
+
+describe( 'EmptySpamButton', () => {
+	const mockSetSearchParams = jest.fn();
+	const mockSearchParams = new URLSearchParams( 'status=spam' );
+
+	beforeEach( async () => {
+		// Reset all mocks before each test
+		jest.clearAllMocks();
+		mockSetSearchParams.mockClear();
+		const coreDataModule = await import( '@wordpress/core-data' );
+		coreDataModule.useEntityRecords.mockReturnValue( {
+			totalItems: 1,
+			isResolving: false,
+		} );
+	} );
+
+	const renderWithProvider = component => {
+		return render(
+			<DashboardSearchParamsProvider value={ [ mockSearchParams, mockSetSearchParams ] }>
+				{ component }
+			</DashboardSearchParamsProvider>
+		);
+	};
+
+	it( 'renders correctly', () => {
+		renderWithProvider( <EmptySpamButton totalItemsSpam={ 1 } /> );
+
+		const button = screen.getByText( 'Delete spam' );
+		expect( button ).toBeInTheDocument();
+		expect( button ).toHaveAttribute( 'type', 'button' );
+		expect( button ).toBeEnabled();
+	} );
+
+	it( 'shows disabled state when spam is empty', () => {
+		renderWithProvider( <EmptySpamButton totalItemsSpam={ 0 } /> );
+
+		const button = screen.getByText( 'Delete spam' );
+		expect( button ).toBeDisabled();
+		expect( button ).toHaveAttribute( 'aria-label', 'Spam is already empty.' );
+	} );
+
+	it( 'shows confirmation dialog when clicked', async () => {
+		renderWithProvider( <EmptySpamButton totalItemsSpam={ 1 } /> );
+
+		const button = screen.getByText( 'Delete spam' );
+		await userEvent.click( button );
+
+		const dialog = await screen.findByRole( 'alertdialog', { name: 'Delete 1 spam response?' } );
+		expect( dialog ).toBeInTheDocument();
+		expect( screen.getByRole( 'button', { name: 'Cancel' } ) ).toHaveFocus();
+	} );
+
+	it( 'does not empty spam when Enter is pressed on open', async () => {
+		const { default: apiFetch } = await import( '@wordpress/api-fetch' );
+
+		renderWithProvider( <EmptySpamButton totalItemsSpam={ 1 } /> );
+
+		await userEvent.click( screen.getByText( 'Delete spam' ) );
+		await expect( screen.findByRole( 'alertdialog' ) ).resolves.toBeInTheDocument();
+		await userEvent.keyboard( '{Enter}' );
+
+		expect( apiFetch ).not.toHaveBeenCalledWith( expect.objectContaining( { method: 'DELETE' } ) );
+	} );
+
+	it( 'empties spam when confirmed', async () => {
+		const { default: apiFetch } = await import( '@wordpress/api-fetch' );
+		const { useDispatch } = await import( '@wordpress/data' );
+		const mockDispatch = useDispatch( 'notices' );
+
+		renderWithProvider( <EmptySpamButton totalItemsSpam={ 1 } /> );
+
+		// Click empty spam button
+		const button = screen.getByText( 'Delete spam' );
+		await userEvent.click( button );
+
+		// Click confirm button
+		const confirmButton = await screen.findByRole( 'button', { name: 'Delete forever' } );
+		await userEvent.click( confirmButton );
+
+		// Verify API call — scope is `all` (no selection, no filter), so payload is just status.
+		await waitFor( () =>
+			expect( apiFetch ).toHaveBeenCalledWith( {
+				method: 'DELETE',
+				path: '/wp/v2/feedback/trash',
+				data: { status: 'spam', limit: 500 },
+			} )
+		);
+
+		// Verify success notice (pluralized with formatNumber).
+		await waitFor( () =>
+			expect( mockDispatch.createSuccessNotice ).toHaveBeenCalledWith(
+				expect.stringContaining( 'deleted permanently' ),
+				{ type: 'snackbar', id: 'empty-spam' }
+			)
+		);
+	} );
+} );
+
+describe( 'labelForScope', () => {
+	it( 'omits the count when deleting all spam', () => {
+		expect( labelForScope( { mode: 'all', count: 140, params: {} } ) ).toBe( 'Delete spam' );
+	} );
+
+	it( 'shows the count for a filter or a selection', () => {
+		expect( labelForScope( { mode: 'filtered', count: 26, params: {} } ) ).toBe(
+			'Delete spam (26)'
+		);
+		expect( labelForScope( { mode: 'selection', count: 3, params: {} } ) ).toBe(
+			'Delete spam (3)'
+		);
+	} );
+} );

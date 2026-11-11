@@ -1,0 +1,25 @@
+{
+	"name": "jpa/tags",
+	"icon": "jpa/category",
+	"title": "Top tags & categories",
+	"description": "The tags and categories of your most viewed posts in the selected period, ranked by views.",
+	"help": {
+		"content": "The tags and categories of your most viewed posts in the selected period, ranked by views. A post counts toward each of its current tags and categories, so this is a breakdown of popular posts by topic rather than a filter over all traffic.",
+		"links": [
+			{
+				"label": "Learn more",
+				"href": "https://jetpack.com/support/jetpack-stats/"
+			}
+		]
+	},
+	"category": "stats",
+	"presentation": "framed",
+	"actions": [
+		{
+			"id": "view-all",
+			"label": "View all",
+			"relevance": "high",
+			"href": "admin.php?page=jetpack-premium-analytics-wp-admin&p=%2Freports%2Ftags"
+		}
+	]
+}

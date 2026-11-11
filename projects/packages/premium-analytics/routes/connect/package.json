@@ -1,0 +1,8 @@
+{
+	"private": true,
+	"name": "@automattic/jetpack-premium-analytics-connect-route",
+	"route": {
+		"path": "/connect",
+		"page": "jetpack-premium-analytics"
+	}
+}

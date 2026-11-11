@@ -1,0 +1,156 @@
+<?php
+/**
+ * Class to handle the Check in the Site Health admin page
+ *
+ * @package automattic/jetpack-protect-plugin
+ */
+
+namespace Automattic\Jetpack\Protect;
+
+use Automattic\Jetpack\Protect_Status\Status;
+
+/**
+ * Site_Health.
+ *
+ * Displays threats in WordPress site health page.
+ */
+class Site_Health {
+
+	/**
+	 * Initialize hooks
+	 *
+	 * @access public
+	 * @return void
+	 */
+	public static function init() {
+		if ( ! has_filter( 'site_status_tests', array( __CLASS__, 'add_check' ) ) ) {
+			add_filter( 'site_status_tests', array( __CLASS__, 'add_check' ), 99 );
+		}
+	}
+
+	/**
+	 * Add site-health page tests.
+	 *
+	 * @param array $checks Core checks.
+	 *
+	 * @access public
+	 * @return array
+	 */
+	public static function add_check( $checks ) {
+		$checks['direct']['jetpack_protect_checks'] = array(
+			'label' => __( 'Jetpack Protect checks', 'jetpack-protect' ),
+			'test'  => array( __CLASS__, 'do_checks' ),
+		);
+
+		return $checks;
+	}
+
+	/**
+	 * Do site-health page checks
+	 *
+	 * @access public
+	 * @return array
+	 */
+	public static function do_checks() {
+		// Protect_Status::STATUS_DISABLED.
+		if ( 'disabled' === Status::get_status()->status ) {
+			return array(
+				'label'       => __( 'Jetpack Protect’s vulnerability check is off', 'jetpack-protect' ),
+				'status'      => 'recommended',
+				'badge'       => array(
+					'label' => __( 'Security', 'jetpack-protect' ),
+					'color' => 'gray',
+				),
+				'description' => sprintf(
+					'<p>%s</p>',
+					__( 'Jetpack isn’t checking WordPress, plugins and themes for known vulnerabilities. You can turn the check back on in Jetpack’s Protect settings.', 'jetpack-protect' )
+				),
+				'actions'     => '',
+				'test'        => 'jetpack_protect_checks',
+			);
+		}
+
+		$total_threats = Status::get_total_threats();
+		$threats       = Status::get_all_threats();
+		$threats       = array_map(
+			function ( $v ) {
+				return $v->title;
+			},
+			$threats
+		);
+
+		/**
+		 * Default, no threats found
+		 */
+		$result = array(
+			'label'       => __( 'No known threats found', 'jetpack-protect' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => __( 'Security', 'jetpack-protect' ),
+				'color' => 'gray',
+			),
+			'description' => sprintf(
+				'<p>%s</p>',
+				__( 'Jetpack Protect did not find any known threats in your site. Threats can be exploited by hackers and cause harm to your website.', 'jetpack-protect' )
+			),
+			'actions'     => '',
+			'test'        => 'jetpack_protect_checks',
+		);
+
+		$status = Status::get_status();
+		// An unconnected site has no results to load, so it keeps the default result.
+		$fetch_failed = ! empty( $status->error ) && 'site_not_connected' !== $status->error_code;
+		if ( ! $total_threats && ( $fetch_failed || ! empty( $status->last_scan_failed ) ) ) {
+			if ( $fetch_failed ) {
+				$result['label']       = __( 'Jetpack Protect couldn’t check your site for threats', 'jetpack-protect' );
+				$result['description'] = sprintf(
+					'<p>%s</p>',
+					esc_html__( 'We couldn’t load your latest scan results, so we can’t confirm your site is free of threats.', 'jetpack-protect' )
+				);
+			} else {
+				$result['label']       = __( 'Your last Jetpack Protect scan didn’t complete', 'jetpack-protect' );
+				$result['description'] = sprintf(
+					'<p>%s</p>',
+					esc_html__( 'We can’t confirm your site is free of threats until a scan finishes.', 'jetpack-protect' )
+				);
+			}
+			$result['status']  = 'recommended';
+			$result['actions'] = sprintf(
+				'<p><a href="%s">%s</a></p>',
+				esc_url( admin_url( 'admin.php?page=jetpack-protect' ) ),
+				esc_html__( 'Open Jetpack Protect', 'jetpack-protect' )
+			);
+		}
+
+		/**
+		 * If threats found.
+		 */
+		if ( $total_threats ) {
+			$result['status'] = 'critical';
+			/* translators: $d is the number of threats found. */
+			$result['label']       = sprintf( _n( 'Your site is affected by %d security threat', 'Your site is affected by %d security threats', $total_threats, 'jetpack-protect' ), $total_threats );
+			$result['description'] = __( 'Jetpack Protect detected the following security threats in your site:', 'jetpack-protect' );
+
+			foreach ( $threats as $threat ) {
+				$result['description'] .= '<p>';
+				$result['description'] .= "<span class='dashicons dashicons-warning' style='color: crimson;'></span> &nbsp";
+				$result['description'] .= wp_kses( $threat, array( 'a' => array( 'href' => array() ) ) ); // Only allow a href HTML tags.
+				$result['description'] .= '</p>';
+			}
+			$result['description'] .= '<p>';
+			$result['description'] .= sprintf(
+				wp_kses(
+					/* translators: Link to Jetpack Protect. */
+					__( 'See <a href="%s">Protect overview page</a> for more information.', 'jetpack-protect' ),
+					array(
+						'a' => array( 'href' => array() ),
+					)
+				),
+				esc_url( admin_url( 'admin.php?page=jetpack-protect' ) )
+			);
+			$result['description'] .= '</p>';
+		}
+
+		return $result;
+	}
+}

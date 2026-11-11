@@ -1,0 +1,121 @@
+import { jest } from '@jest/globals';
+import { render, screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+// ESM test: static jest.mock does not work under --experimental-vm-modules, so mock the modules
+// with unstable_mockModule (must run before the dynamic import of the component below).
+const mockUnlinkUser = jest.fn< () => Promise< unknown > >();
+const mockSetApiRoot = jest.fn();
+const mockSetApiNonce = jest.fn();
+const mockRecordEvent = jest.fn();
+
+jest.unstable_mockModule( '@automattic/jetpack-api', () => ( {
+	__esModule: true,
+	default: {
+		setApiRoot: mockSetApiRoot,
+		setApiNonce: mockSetApiNonce,
+		unlinkUser: mockUnlinkUser,
+	},
+} ) );
+
+jest.unstable_mockModule( '@automattic/jetpack-analytics', () => ( {
+	__esModule: true,
+	default: { tracks: { recordEvent: mockRecordEvent } },
+} ) );
+
+const { default: OwnerDisconnectDialog } = await import( '../index' );
+
+describe( 'OwnerDisconnectDialog', () => {
+	const testProps = {
+		apiNonce: 'test-nonce',
+		apiRoot: 'https://example.org/wp-json/',
+		isOpen: true, // nothing renders if false
+		onClose: jest.fn(),
+	};
+
+	const dialogName = 'Disconnect owner account';
+
+	beforeEach( () => {
+		jest.clearAllMocks();
+		mockUnlinkUser.mockResolvedValue( undefined );
+	} );
+
+	it( 'renders nothing when isOpen is false', () => {
+		render( <OwnerDisconnectDialog { ...testProps } isOpen={ false } /> );
+		expect( screen.queryByRole( 'dialog' ) ).not.toBeInTheDocument();
+	} );
+
+	describe( 'when open', () => {
+		const renderOpen = ( props = {} ) =>
+			render( <OwnerDisconnectDialog { ...testProps } { ...props } /> );
+
+		it( 'renders the labelled Modal', () => {
+			renderOpen();
+			// Modal aria.labelledby points at the heading; assert both resolve to the same label.
+			expect( screen.getByRole( 'dialog', { name: dialogName } ) ).toBeInTheDocument();
+			expect(
+				within( screen.getByRole( 'dialog', { name: dialogName } ) ).getByRole( 'heading' )
+			).toHaveTextContent( dialogName );
+		} );
+
+		it( 'seeds the REST API with the passed root and nonce', () => {
+			renderOpen();
+			expect( mockSetApiRoot ).toHaveBeenCalledWith( testProps.apiRoot );
+			expect( mockSetApiNonce ).toHaveBeenCalledWith( testProps.apiNonce );
+		} );
+
+		it( 'hands the user to the transfer flow rather than running its own', async () => {
+			const onTransferOwnership = jest.fn();
+			const user = userEvent.setup();
+			renderOpen( { onTransferOwnership } );
+
+			await user.click(
+				screen.getByRole( 'link', { name: /Transfer ownership to another admin/ } )
+			);
+
+			expect( onTransferOwnership ).toHaveBeenCalledTimes( 1 );
+			expect( screen.queryByRole( 'combobox' ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'hides the transfer action when no flow is wired up', () => {
+			renderOpen();
+			expect(
+				screen.queryByRole( 'link', { name: /Transfer ownership to another admin/ } )
+			).not.toBeInTheDocument();
+		} );
+
+		it( 'calls onClose when "Stay connected" is clicked', async () => {
+			const user = userEvent.setup();
+			renderOpen();
+			await user.click( screen.getByRole( 'button', { name: 'Stay connected' } ) );
+			expect( testProps.onClose ).toHaveBeenCalledTimes( 1 );
+		} );
+	} );
+
+	describe( 'disconnect flow', () => {
+		it( 'unlinks every user and reports it on Disconnect', async () => {
+			const user = userEvent.setup();
+			const onUnlinked = jest.fn();
+			render( <OwnerDisconnectDialog { ...testProps } onUnlinked={ onUnlinked } /> );
+
+			await user.click( screen.getByRole( 'button', { name: 'Disconnect' } ) );
+
+			expect( mockUnlinkUser ).toHaveBeenCalledWith( true, { disconnectAllUsers: true } );
+			await waitFor( () => expect( onUnlinked ).toHaveBeenCalledTimes( 1 ) );
+		} );
+
+		it( 'shows an error and re-enables the button when unlink fails', async () => {
+			const user = userEvent.setup();
+			mockUnlinkUser.mockRejectedValueOnce( new Error( 'nope' ) );
+			render( <OwnerDisconnectDialog { ...testProps } /> );
+
+			await user.click( screen.getByRole( 'button', { name: 'Disconnect' } ) );
+
+			await expect(
+				screen.findByText( /There was a problem disconnecting your account/ )
+			).resolves.toBeInTheDocument();
+			// Button re-enabled after failure so the user can retry.
+			expect( screen.getByRole( 'button', { name: 'Disconnect' } ) ).toBeEnabled();
+		} );
+	} );
+} );

@@ -1,0 +1,139 @@
+/**
+ * External dependencies
+ */
+import { toAuthorId } from '@jetpack-premium-analytics/data';
+import {
+	PostHighlightCard,
+	type PostHighlightCardMetric,
+	PostHighlightCardSkeleton,
+	type ReportParamsFieldAttributes,
+	WidgetRoot,
+	WidgetState,
+	useWidgetNavigationSearch,
+	useWidgetRootContext,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import { useLatestPost } from './use-latest-post';
+import type { WidgetRenderProps } from '@wordpress/widget-primitives';
+
+/**
+ * Widget attributes shape.
+ *
+ * @property authorScoped - Pick one author's latest post instead of the site's.
+ *                        Set by the author detail composition; not a user-facing control.
+ */
+export type LatestPostAttributes = {
+	authorScoped?: boolean;
+};
+
+// Report params are dashboard-driven, but this widget reports lifetime totals
+// and ignores the date range; the host (and Storybook) may still inject them.
+type LatestPostRenderAttributes = LatestPostAttributes & Partial< ReportParamsFieldAttributes >;
+type LatestPostWidgetProps = WidgetRenderProps< LatestPostRenderAttributes >;
+
+/**
+ * Every tile is a lifetime total, so no tile carries an aggregation note. An
+ * author-scoped instance narrows the pick to the URL's author.
+ */
+function LatestPostReport( { authorScoped }: { authorScoped: boolean } ) {
+	const { reportParams } = useWidgetRootContext();
+	// Gated on the instance attribute, not the URL alone, so a stray `author_id`
+	// on the dashboard cannot narrow the site-wide card.
+	const authorId = authorScoped ? toAuthorId( reportParams.author_id ) : 0;
+
+	// An author-scoped instance rendered off its page must not fall back to the
+	// site-wide pick under the author-scoped title.
+	if ( authorScoped && ! authorId ) {
+		return (
+			<WidgetState
+				isLoading={ false }
+				isError={ false }
+				isEmpty
+				empty={ {
+					description: __(
+						'Open an author to see their latest post here.',
+						'jetpack-premium-analytics-pkg'
+					),
+				} }
+			>
+				{ null }
+			</WidgetState>
+		);
+	}
+
+	return <LatestPostCard authorId={ authorId } />;
+}
+
+function LatestPostCard( { authorId }: { authorId: number } ) {
+	const { post, isLoading, isFetching, isError, refetch } = useLatestPost( authorId );
+	const detailSearch = useWidgetNavigationSearch( {
+		origin: authorId ? { report: 'authors' } : { report: 'posts', section: 'posts-pages' },
+	} );
+
+	const metrics: PostHighlightCardMetric[] = post
+		? [
+				{ key: 'views', label: __( 'Views', 'jetpack-premium-analytics-pkg' ), value: post.views },
+				{
+					key: 'likes',
+					label: __( 'Likes', 'jetpack-premium-analytics-pkg' ),
+					value: post.likeCount,
+				},
+				{
+					key: 'comments',
+					label: __( 'Comments', 'jetpack-premium-analytics-pkg' ),
+					value: post.commentCount,
+				},
+			]
+		: [];
+
+	return (
+		<WidgetState
+			isLoading={ isLoading }
+			isFetching={ isFetching }
+			isError={ isError }
+			isEmpty={ ! post }
+			error={ {
+				description: __(
+					"We couldn't load your latest post. Please try again in a moment.",
+					'jetpack-premium-analytics-pkg'
+				),
+				actions: [ { label: __( 'Retry', 'jetpack-premium-analytics-pkg' ), onClick: refetch } ],
+			} }
+			empty={ {
+				description: authorId
+					? __( 'This author has not published a post yet.', 'jetpack-premium-analytics-pkg' )
+					: __( 'Your latest post will show here.', 'jetpack-premium-analytics-pkg' ),
+			} }
+			renderLoading={ <PostHighlightCardSkeleton /> }
+		>
+			{ post && (
+				<PostHighlightCard
+					title={ post.title }
+					url={ post.url }
+					postId={ post.id }
+					detailSearch={ detailSearch }
+					date={ post.date }
+					imageUrl={ post.imageUrl }
+					imageAlt={ post.imageAlt }
+					metrics={ metrics }
+				/>
+			) }
+		</WidgetState>
+	);
+}
+
+/**
+ * WidgetRoot provides the analytics query client and chart theme the inner card
+ * relies on. The widget ignores the dashboard date range; host attributes still
+ * pass through for the widget contract.
+ */
+export default function LatestPost( { attributes = {} }: LatestPostWidgetProps ) {
+	return (
+		<WidgetRoot attributes={ attributes }>
+			<LatestPostReport authorScoped={ attributes.authorScoped === true } />
+		</WidgetRoot>
+	);
+}

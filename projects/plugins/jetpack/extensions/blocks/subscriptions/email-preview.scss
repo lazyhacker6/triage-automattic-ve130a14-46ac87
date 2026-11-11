@@ -1,0 +1,31 @@
+@use "@automattic/color-studio/dist/color-variables" as studio;
+
+.jetpack-newsletter-test-email-modal__email-sent {
+	color: studio.$studio-jetpack-green-30;
+
+	svg {
+		fill: studio.$studio-jetpack-green-30;
+	}
+}
+
+.jetpack-newsletter-preview-modal {
+
+	h1 {
+		flex-shrink: 0;
+	}
+}
+
+// Inline, not flex: `@wordpress/ui` keeps its new-tab indicator an
+// inline-block so the link underline stays off it, and a flex item
+// blockifies it back under the underline.
+.jetpack-newsletter-preview-modal__design-link {
+
+	svg {
+		vertical-align: middle;
+	}
+
+	.jetpack-newsletter-preview-modal__design-link-label {
+		margin-inline-start: 4px;
+		vertical-align: middle;
+	}
+}

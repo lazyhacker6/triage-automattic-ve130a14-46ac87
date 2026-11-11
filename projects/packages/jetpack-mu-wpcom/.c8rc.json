@@ -1,0 +1,12 @@
+{
+	"reporter": [ "json" ],
+	"all": true,
+	"include": [ "src" ],
+	"exclude": [
+		"src/build",
+		"src/build-module",
+		"**/*.d.ts",
+		"**/test{,s}",
+		"src/features/newspack-blocks/synced-newspack-blocks"
+	]
+}

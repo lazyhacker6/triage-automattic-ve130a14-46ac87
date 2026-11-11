@@ -1,0 +1,113 @@
+// Wider than the Dialog's medium size so the goal cards fit two abreast.
+.ai-launchpad-wizard {
+	max-width: 640px;
+}
+
+// The Dialog z-index defaults to auto, below the admin bar and menu.
+.ai-launchpad-wizard__portal {
+	--wp-ui-dialog-z-index: 100000;
+}
+
+.ai-launchpad-wizard__title:focus {
+	// A programmatic focus target, not a control, so it needs no ring.
+	outline: none;
+}
+
+.ai-launchpad-wizard__step-subtitle {
+	color: var(--wpds-color-foreground-content-neutral-weak);
+}
+
+.ai-launchpad-wizard__progress {
+	width: 80px;
+	height: var(--wpds-dimension-size-5xs);
+	background: var(--wpds-color-background-track-neutral-weak);
+	border-radius: var(--wpds-border-radius-sm);
+	overflow: hidden;
+	margin-block-end: var(--wpds-dimension-gap-xl);
+}
+
+.ai-launchpad-wizard__progress-bar {
+	height: 100%;
+	// WPDS has no static brand fill, so borrow the interactive one.
+	background: var(--wpds-color-background-interactive-brand-strong);
+	transition: width var(--wpds-motion-duration-md) var(--wpds-motion-easing-balanced);
+}
+
+.ai-launchpad-wizard__cards {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: var(--wpds-dimension-gap-md);
+
+	@media ( max-width: 600px ) {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.ai-launchpad-wizard__card {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: var(--wpds-dimension-gap-md);
+	padding: var(--wpds-dimension-padding-lg);
+	background: var(--wpds-color-background-surface-neutral-strong);
+	border: var(--wpds-border-width-xs) solid var(--wpds-color-stroke-surface-neutral);
+	border-radius: var(--wpds-border-radius-lg);
+	cursor: var(--wpds-cursor-control);
+	text-align: start;
+	transition:
+		border-color var(--wpds-motion-duration-sm) var(--wpds-motion-easing-subtle),
+		box-shadow var(--wpds-motion-duration-sm) var(--wpds-motion-easing-subtle);
+
+	// Neutral, so hover never reads as the brand-blue selection.
+	&:hover {
+		border-color: var(--wpds-color-stroke-interactive-neutral-active);
+	}
+
+	&:has(:focus-visible) {
+		outline: var(--wpds-border-width-focus) solid var(--wpds-color-stroke-focus);
+		outline-offset: var(--wpds-border-width-focus);
+	}
+
+	&.is-selected {
+		border-color: var(--wpds-color-stroke-interactive-brand);
+		box-shadow: 0 0 0 var(--wpds-border-width-xs) var(--wpds-color-stroke-interactive-brand);
+
+		// Forced colors drop the box-shadow, so thicken the border instead.
+		@media (forced-colors: active) {
+			border: var(--wpds-border-width-focus) solid Highlight;
+		}
+	}
+
+	svg {
+		flex-shrink: 0;
+		fill: currentColor;
+	}
+}
+
+.ai-launchpad-wizard__card-text {
+	min-width: 0;
+}
+
+// Not VisuallyHidden: wp-admin's unlayered radio styles beat its layered CSS.
+.ai-launchpad-wizard__card-input {
+	position: absolute;
+	inline-size: 1px;
+	block-size: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	border: 0;
+	white-space: nowrap;
+}
+
+.ai-launchpad-wizard__card-description {
+	color: var(--wpds-color-foreground-content-neutral-weak);
+	// Balance the copy so a single word never orphans onto its own last line.
+	text-wrap: balance;
+
+	// On full-width mobile cards, `pretty` avoids orphans while filling the width.
+	@media ( max-width: 600px ) {
+		text-wrap: pretty;
+	}
+}

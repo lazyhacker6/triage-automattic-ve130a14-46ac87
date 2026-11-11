@@ -1,0 +1,75 @@
+import { getRedirectUrl } from '@automattic/jetpack-components';
+import { __ } from '@wordpress/i18n';
+import { Button, ButtonLink } from '@wordpress/ui';
+import PropTypes from 'prop-types';
+import useActivePlugins from '../../../hooks/use-active-plugins';
+import { getProductGroup } from '../../activation-screen/utils';
+
+import './style.scss';
+
+const PrimaryLink = props => {
+	const { siteAdminUrl, siteRawUrl, productId } = props;
+	const [ activePlugins, isFetching ] = useActivePlugins();
+
+	const isPluginActive = pluginName =>
+		activePlugins.map( plugin => plugin.name ).includes( pluginName );
+
+	const productGroup = getProductGroup( productId );
+	const isJetpackActive = isPluginActive( 'Jetpack' );
+	const isJetpackSocialActive = isPluginActive( 'Jetpack Social' );
+	const isJetpackSocialProduct =
+		productGroup === 'jetpack_social_advanced' || productGroup === 'jetpack_social_basic';
+	const isJetpackProtectActive = isPluginActive( 'Jetpack Protect' );
+
+	if ( isFetching ) {
+		return (
+			<Button
+				className="jp-license-activation-screen-success-info--button"
+				loading
+				loadingAnnouncement={ __( 'Loading…', 'jetpack-licensing' ) }
+				aria-label={ __( 'Loading…', 'jetpack-licensing' ) }
+			/>
+		);
+	}
+
+	if ( isJetpackSocialProduct && ( isJetpackActive || isJetpackSocialActive ) ) {
+		return (
+			<ButtonLink
+				className="jp-license-activation-screen-success-info--button"
+				href={ siteAdminUrl + 'admin.php?page=jetpack-social' }
+			>
+				{ __( 'Configure my site', 'jetpack-licensing' ) }
+			</ButtonLink>
+		);
+	}
+
+	if ( productGroup === 'jetpack_scan' ) {
+		const redirectSource = isJetpackProtectActive
+			? siteAdminUrl + 'admin.php?page=jetpack-protect'
+			: getRedirectUrl( 'jetpack-license-activation-success-scan', { site: siteRawUrl } );
+		return (
+			<ButtonLink
+				className="jp-license-activation-screen-success-info--button"
+				href={ redirectSource }
+			>
+				{ __( 'View scan results', 'jetpack-licensing' ) }
+			</ButtonLink>
+		);
+	}
+
+	return (
+		<ButtonLink
+			className="jp-license-activation-screen-success-info--button"
+			href={ getRedirectUrl( 'license-activation-view-my-plans', { site: siteRawUrl } ) }
+		>
+			{ __( 'View my plans', 'jetpack-licensing' ) }
+		</ButtonLink>
+	);
+};
+
+PrimaryLink.propTypes = {
+	siteAdminUrl: PropTypes.string.isRequired,
+	siteRawUrl: PropTypes.string.isRequired,
+};
+
+export { PrimaryLink };

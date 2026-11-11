@@ -1,0 +1,11 @@
+.page {
+	min-block-size: 0;
+}
+
+.externalLink {
+	gap: var(--wpds-dimension-gap-xs);
+}
+
+.externalIcon {
+	flex-shrink: 0;
+}

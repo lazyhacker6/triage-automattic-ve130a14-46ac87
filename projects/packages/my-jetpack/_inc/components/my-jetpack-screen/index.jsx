@@ -1,0 +1,230 @@
+/*
+ * External dependencies
+ */
+import { ActionButton, AdminPage } from '@automattic/jetpack-components';
+import JitmSlot from '@automattic/jetpack-components/jitm-slot';
+import { isSimpleSite } from '@automattic/jetpack-script-data';
+import { __ } from '@wordpress/i18n';
+import { Notice } from '@wordpress/ui';
+import clsx from 'clsx';
+import { useContext, useEffect, useLayoutEffect, useRef } from 'react';
+import { useLocation, useParams } from 'react-router';
+/*
+ * Internal dependencies
+ */
+import { NoticeContext } from '../../context/notices/noticeContext';
+import useEvaluationRecommendations from '../../data/evaluation-recommendations/use-evaluation-recommendations';
+import useUpdateHistoricallyActiveModules from '../../data/products/use-update-historically-active-modules';
+import useRedBubbleQuery from '../../data/use-red-bubble-query';
+import { getMyJetpackWindowInitialState } from '../../data/utils/get-my-jetpack-window-state';
+import onKeyDownCallback from '../../data/utils/onKeyDownCallback';
+import resetJetpackOptions from '../../data/utils/reset-jetpack-options';
+import useAnalytics from '../../hooks/use-analytics';
+import useIsJetpackUserNew from '../../hooks/use-is-jetpack-user-new';
+import useMyJetpackConnection from '../../hooks/use-my-jetpack-connection';
+import useNotificationWatcher from '../../hooks/use-notification-watcher';
+import { useQueryParameter } from '../../hooks/use-query-parameter';
+import { useReplayPendingNotice } from '../../utils/pending-notice';
+import { toRouteHref } from '../../utils/route-href';
+import EvaluationRecommendations from '../evaluation-recommendations';
+import { getHeaderControls } from '../header-controls';
+import IDCModal from '../idc-modal';
+import { MyJetpackTabPanel } from '../my-jetpack-tab-panel';
+import { getModulesManagementUrl, resolveMyJetpackSection } from '../my-jetpack-tab-panel/utils';
+import OnboardingTour from '../onboarding-tour';
+import buildOptionalMenuItems from './build-optional-menu-items';
+import styles from './styles.module.scss';
+
+// Named export for testability: it has its own mount effect (Tracks view event) worth
+// covering without mounting the whole screen.
+export const GlobalNotice = ( { message, title, options } ) => {
+	const { recordEvent } = useAnalytics();
+	useEffect( () => {
+		const tracksArgs = options?.tracksArgs || {};
+
+		recordEvent( 'jetpack_myjetpack_global_notice_view', {
+			notice_id: options.id,
+			...tracksArgs,
+		} );
+	}, [ options.id, recordEvent, options?.tracksArgs ] );
+
+	const actionButtons = options.actions?.map( action => {
+		return (
+			<ActionButton key={ action.key || action.label } customClass={ styles.cta } { ...action } />
+		);
+	} );
+
+	// Watchers pass `hideCloseButton: false` plus `onClose` to override this default.
+	const hideCloseButton = options.hideCloseButton ?? true;
+
+	return (
+		<div className={ clsx( styles.notice, styles[ 'notice-gap' ] ) }>
+			<Notice.Root intent={ options.level || 'info' }>
+				{ title && <Notice.Title>{ title }</Notice.Title> }
+				{ /* `render={ <div /> }`: `message` can carry block content, but Description defaults to a `span`. */ }
+				<Notice.Description className={ styles.message } render={ <div /> }>
+					{ message }
+				</Notice.Description>
+				{ actionButtons && actionButtons.length > 0 && (
+					<Notice.Actions>{ actionButtons }</Notice.Actions>
+				) }
+				{ ! hideCloseButton && <Notice.CloseIconButton onClick={ options.onClose } /> }
+			</Notice.Root>
+		</div>
+	);
+};
+
+/**
+ * The My Jetpack App Main Screen.
+ *
+ * @return {object} The MyJetpackScreen component.
+ */
+export default function MyJetpackScreen() {
+	useNotificationWatcher();
+	// Replay a success notice persisted before a product toggle reloaded the page.
+	useReplayPendingNotice();
+	const {
+		// no prettier please
+		adminUrl,
+		sandboxedDomain,
+		isDevVersion,
+		userIsAdmin,
+		isJetpackPluginActive,
+	} = getMyJetpackWindowInitialState();
+
+	const { isSectionVisible } = useEvaluationRecommendations();
+	const { apiRoot, apiNonce, isSiteConnected } = useMyJetpackConnection();
+	const { currentNotice } = useContext( NoticeContext );
+	const {
+		message: noticeMessage,
+		title: noticeTitle,
+		options: noticeOptions,
+	} = currentNotice || {};
+
+	const {
+		data: redBubbleAlerts,
+		isLoading: isRedBubbleAlertsLoading,
+		isError: isRedBubbleAlertsError,
+	} = useRedBubbleQuery();
+
+	const updateHistoricallyActiveModules = useUpdateHistoricallyActiveModules();
+
+	useEffect( () => {
+		if ( getMyJetpackWindowInitialState( 'lifecycleStats' )?.historicallyActiveModulesRefreshDue ) {
+			updateHistoricallyActiveModules();
+		}
+	}, [ updateHistoricallyActiveModules ] );
+
+	const isNewUser = useIsJetpackUserNew();
+
+	const { recordEvent } = useAnalytics();
+	const params = useParams();
+	const routeLocation = useLocation();
+	const previousTabRef = useRef( null );
+
+	// useLayoutEffect gets called before useEffect.
+	// We are using it here to ensure the `page_view` event gets triggered first.
+	// Determine current tab
+	const currentTab = resolveMyJetpackSection( params.section );
+
+	useLayoutEffect( () => {
+		let customTracksData = {};
+
+		if ( ! isRedBubbleAlertsError && Object.keys( redBubbleAlerts )?.length ) {
+			customTracksData = {
+				red_bubble_alerts: Object.keys( redBubbleAlerts ).join( ',' ),
+			};
+		}
+
+		if ( ! isRedBubbleAlertsLoading ) {
+			recordEvent( 'jetpack_myjetpack_page_view', {
+				...customTracksData,
+				tab_name: currentTab,
+				previous_tab: previousTabRef.current,
+			} );
+
+			// Update previous tab for next navigation
+			previousTabRef.current = currentTab;
+		}
+	}, [
+		recordEvent,
+		redBubbleAlerts,
+		isRedBubbleAlertsError,
+		isRedBubbleAlertsLoading,
+		currentTab,
+	] );
+
+	const { pathname: routePath, search: routeSearch } = routeLocation;
+	const shouldReload = new URLSearchParams( routeSearch ).get( 'reload' ) === 'true';
+
+	useEffect( () => {
+		if ( shouldReload ) {
+			// Clears the flag from the route and reloads the page.
+			const routeParams = new URLSearchParams( routeSearch );
+			routeParams.delete( 'reload' );
+			const url = new URL( window.location.href );
+			url.searchParams.set(
+				'p',
+				toRouteHref( { pathname: routePath, search: routeParams.toString() } )
+			);
+			window.history.replaceState( null, '', url );
+			window.location.reload();
+		}
+	}, [ shouldReload, routePath, routeSearch ] );
+
+	// show welcome tour if user is redirected from the onboarding flow
+	const isRedirectingFromOnboarding = useQueryParameter( 'from' ) === 'jetpack-onboarding';
+
+	if ( shouldReload ) {
+		return null;
+	}
+
+	const optionalMenuItems = buildOptionalMenuItems( {
+		adminUrl,
+		modulesManagementUrl: getModulesManagementUrl( `${ adminUrl }admin.php?page=jetpack_modules` ),
+		isDevVersion,
+		userIsAdmin,
+		isSiteConnected,
+		isJetpackPluginActive,
+		isSimpleSite: isSimpleSite(),
+		onModulesClick: () => recordEvent( 'jetpack_myjetpack_footer_link_click', { link: 'modules' } ),
+		onResetClick: () => resetJetpackOptions(),
+		onResetKeyDown: e => onKeyDownCallback( e, () => resetJetpackOptions() ),
+	} );
+
+	return (
+		<AdminPage
+			siteAdminUrl={ adminUrl }
+			sandboxedDomain={ sandboxedDomain }
+			apiRoot={ apiRoot }
+			apiNonce={ apiNonce }
+			title="Jetpack"
+			globalControls={ getHeaderControls() }
+			optionalMenuItems={ optionalMenuItems }
+			className={ styles[ 'my-jetpack-screen' ] }
+			showBottomBorder={ false }
+		>
+			<h1 className="screen-reader-text">{ __( 'My Jetpack', 'jetpack-my-jetpack' ) }</h1>
+
+			<IDCModal />
+			{ isSectionVisible && userIsAdmin && <EvaluationRecommendations /> }
+
+			{ isRedirectingFromOnboarding && <OnboardingTour /> }
+
+			<MyJetpackTabPanel
+				beforeContent={
+					<>
+						{ ! isNewUser && <JitmSlot /> }
+						{ noticeMessage && (
+							<GlobalNotice
+								message={ noticeMessage }
+								title={ noticeTitle }
+								options={ noticeOptions }
+							/>
+						) }
+					</>
+				}
+			/>
+		</AdminPage>
+	);
+}

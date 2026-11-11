@@ -1,0 +1,46 @@
+@use "@automattic/jetpack-base-styles/style";
+
+.jetpack-connect-banner-nudge {
+
+	.jetpack-upgrade-plan-banner__wrapper {
+		flex-wrap: nowrap;
+
+		&__description {
+			line-height: 24px;
+		}
+
+		.components-button.is-primary {
+			background-color: var(--wpds-color-background-interactive-neutral);
+			color: var(--wpds-color-foreground-interactive-neutral);
+			margin-top: 8px;
+			margin-bottom: 8px;
+
+			&:hover {
+				background-color: var(--wpds-color-background-interactive-neutral-active);
+			}
+		}
+	}
+}
+
+.jetpack-connect-banner {
+	color: var(--wpds-color-foreground-content-neutral);
+	background-color: var(--wpds-color-background-surface-neutral);
+	box-shadow: 0 12px 15px 0 rgba(0, 0, 0, 0.12), 0 3px 9px 0 rgba(0, 0, 0, 0.12), 0 1px 3px 0 rgba(0, 0, 0, 0.15);
+	border-radius: 0 0 2px 2px;
+
+	&__explanation {
+		display: flex;
+		padding: 8px 8px 8px 12px;
+		align-items: flex-end;
+		box-sizing: border-box;
+		border-radius: 6px 6px 0 0;
+		gap: 6px;
+
+		p {
+			color: var(--wpds-color-foreground-content-neutral-weak);
+			font-size: var(--wpds-typography-font-size-xs);
+			padding: 6px 8px;
+			margin: 0;
+		}
+	}
+}

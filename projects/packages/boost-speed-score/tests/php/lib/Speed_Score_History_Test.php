@@ -1,0 +1,121 @@
+<?php
+namespace Automattic\Jetpack\Boost_Speed_Score\Tests\Lib;
+
+use Automattic\Jetpack\Boost_Speed_Score\Speed_Score_History;
+use Automattic\Jetpack\Boost_Speed_Score\Tests\Base_TestCase;
+use Brain\Monkey\Functions;
+
+/**
+ * Class Speed_Score_History_Test
+ *
+ * @package Automattic\Jetpack\Boost_Speed_Score\Tests\Lib
+ */
+class Speed_Score_History_Test extends Base_TestCase {
+	/**
+	 * @var Speed_Score_History
+	 */
+	public $history;
+	public $data;
+
+	/**
+	 * Set up initial test data
+	 */
+	protected function set_up() {
+		parent::set_up();
+
+		$this->data = array();
+
+		Functions\when( 'get_option' )->alias(
+			function ( $name ) {
+				return Speed_Score_History::LEGACY_MIGRATED_OPTION === $name ? 1 : $this->data;
+			}
+		);
+
+		Functions\when( 'update_option' )->alias(
+			function ( $option_name, $data ) {
+				if ( Speed_Score_History::OPTION_PREFIX . md5( 'http://example.com' ) === $option_name ) {
+					$this->data = $data;
+				}
+			}
+		);
+
+		$this->history = new Speed_Score_History( 'http://example.com' );
+
+		for ( $i = 0; $i < Speed_Score_History::LIMIT; $i++ ) {
+			$this->history->push(
+				array(
+					'timestamp' => time() - $i * 100,
+					'scores'    => (object) array(
+						'mobile'  => rand( 0, 100 ),
+						'desktop' => rand( 0, 100 ),
+					),
+				)
+			);
+		}
+
+		$this->history->push(
+			array(
+				'timestamp' => time() - 50,
+				'scores'    => (object) array(
+					'mobile'  => 20,
+					'desktop' => 25,
+				),
+			)
+		);
+
+		$this->history->push(
+			array(
+				'timestamp' => time() - 1000,
+				'scores'    => (object) array(
+					'mobile'  => 30,
+					'desktop' => 35,
+				),
+			)
+		);
+	}
+
+	/**
+	 * Test if the history is limited to 20 entries
+	 */
+	public function test_history_is_limited() {
+		$this->assertTrue( $this->history->count() === 20 );
+	}
+
+	public function test_empty_history_checks_legacy_records_only_once() {
+		$options      = array( Speed_Score_History::LEGACY_MIGRATED_OPTION => 1 );
+		$legacy_key   = Speed_Score_History::OPTION_PREFIX . md5( 'http://example.com/?jb-disable-modules=all' );
+		$legacy_reads = 0;
+
+		Functions\when( 'get_option' )->alias(
+			function ( $name, $default = false ) use ( &$options, $legacy_key, &$legacy_reads ) {
+				if ( $name === $legacy_key ) {
+					++$legacy_reads;
+				}
+				return $options[ $name ] ?? $default;
+			}
+		);
+		Functions\when( 'update_option' )->alias(
+			function ( $name, $value ) use ( &$options ) {
+				$options[ $name ] = $value;
+			}
+		);
+
+		$first  = new Speed_Score_History( 'http://example.com?jb-disable-modules=all' );
+		$second = new Speed_Score_History( 'http://example.com/?jb-disable-modules=all' );
+
+		$this->assertSame( 0, $first->count() );
+		$this->assertSame( 0, $second->count() );
+		$this->assertSame( 1, $legacy_reads );
+	}
+
+	/**
+	 * Test if we can accessing latest score by offset works.
+	 */
+	public function test_receiving_latest_by_offset() {
+		$this->assertEquals( 20, $this->history->latest_scores( 1 )->mobile );
+		$this->assertEquals( 25, $this->history->latest_scores( 1 )->desktop );
+
+		$this->assertEquals( 30, $this->history->latest_scores()->mobile );
+		$this->assertEquals( 35, $this->history->latest_scores()->desktop );
+	}
+}

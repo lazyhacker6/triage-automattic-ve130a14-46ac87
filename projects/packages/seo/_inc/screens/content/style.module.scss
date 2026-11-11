@@ -1,0 +1,45 @@
+// Content tab: full-width DataViews list (no max-width — it fills the available
+// width, matching the Forms dashboard), with an optional SEO inspector panel.
+.root {
+	inline-size: 100%;
+}
+
+// The tab is full-bleed, so the paused banner brings back the page padding the
+// other tabs get from their content area.
+.notice {
+	margin: var(--wpds-dimension-padding-2xl) var(--wpds-dimension-padding-2xl) 0;
+}
+
+// The per-post SEO editor in the route's inspector sidebar, which scrolls it.
+// The frame fills the sidebar so the actions footer can sit at its bottom.
+.inspectorFrame {
+	display: flex;
+	flex-direction: column;
+	min-block-size: 100%;
+}
+
+.inspector {
+	flex: 1;
+}
+
+// Inline padding matches the title bar's, so the fields line up with its title.
+.inspectorBody {
+	padding: var(--wpds-dimension-padding-2xl);
+}
+
+// Google-style search-result snippet shown live in the inspector.
+.preview {
+	padding: var(--wpds-dimension-padding-md);
+	background: var(--wpds-color-background-surface-neutral);
+	border-radius: var(--wpds-border-radius-md);
+}
+
+.muted {
+	color: var(--wpds-color-foreground-content-neutral-weak);
+}
+
+.title {
+	color: var(--wpds-color-foreground-interactive-brand);
+	font-size: 18px;
+	line-height: 1.3;
+}

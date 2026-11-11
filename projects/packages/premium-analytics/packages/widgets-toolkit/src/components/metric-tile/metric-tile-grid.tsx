@@ -1,0 +1,173 @@
+/**
+ * External dependencies
+ */
+import { Icon, Text } from '@jetpack-premium-analytics/externals';
+import clsx from 'clsx';
+/**
+ * Internal dependencies
+ */
+import { MetricNoteTooltip } from '../metric-note-tooltip';
+import { MetricValue } from '../metric-value';
+import { MetricWithComparison } from '../metric-with-comparison';
+import styles from './metric-tile-grid.module.scss';
+import type { DataFormat } from '../../types';
+import type { ComponentProps } from 'react';
+
+type MetricTileGridItem = {
+	key: string;
+
+	/**
+	 * Icon shown alongside the label.
+	 */
+	icon?: ComponentProps< typeof Icon >[ 'icon' ];
+
+	/**
+	 * The metric label (e.g. "Posts").
+	 */
+	label: string;
+
+	/**
+	 * The metric value. `null` marks a metric the site doesn't have yet and
+	 * renders the placeholder instead of a formatted zero; any other non-finite
+	 * value (`undefined`, `NaN`) also falls back to the placeholder.
+	 */
+	value: number | null;
+
+	/**
+	 * The comparison-period value. Setting this — to a number or an explicit
+	 * `null` — opts the tile into the comparison layout, where the value renders
+	 * with a period-over-period delta. A number shows the delta; `null` renders
+	 * the value alone (comparison requested but no comparable data). Leaving it
+	 * `undefined` keeps the plain value layout used by non-comparison widgets.
+	 */
+	previousValue?: number | null;
+
+	/**
+	 * Caveat about how the value is aggregated, shown in a tooltip on the tile header.
+	 */
+	note?: string;
+
+	/**
+	 * Format configuration for this tile's value. Falls back to the grid's
+	 * `dataFormat`.
+	 */
+	dataFormat?: DataFormat;
+
+	/**
+	 * ISO 4217 currency code (e.g. `'USD'`), for currency formats.
+	 */
+	currencyCode?: string;
+
+	/**
+	 * Shown in place of the value when it is not a finite number.
+	 * @default '—'
+	 */
+	placeholder?: string;
+
+	className?: string;
+};
+
+type MetricTileGridProps = {
+	className?: string;
+
+	tiles: MetricTileGridItem[];
+
+	/**
+	 * Default format configuration for tile values.
+	 * @default { type: 'number' }
+	 */
+	dataFormat?: DataFormat;
+
+	/**
+	 * Default ISO 4217 currency code (e.g. `'USD'`), for currency formats.
+	 */
+	currencyCode?: string;
+};
+
+/**
+ * The value cell for a single tile. A non-finite value renders the placeholder;
+ * a tile that opts into comparison (its `previousValue` is set) renders through
+ * `MetricWithComparison`; otherwise it renders a plain formatted value.
+ *
+ * @return The rendered value cell.
+ */
+function MetricTileValue( {
+	tile,
+	dataFormat,
+	currencyCode,
+}: {
+	tile: MetricTileGridItem;
+	dataFormat: DataFormat;
+	currencyCode?: string;
+} ) {
+	if ( ! Number.isFinite( tile.value ) ) {
+		return <Text className={ styles.placeholder }>{ tile.placeholder ?? '—' }</Text>;
+	}
+
+	const format = tile.dataFormat ?? dataFormat;
+	const tileCurrencyCode = tile.currencyCode ?? currencyCode;
+
+	if ( tile.previousValue !== undefined ) {
+		return (
+			<span className={ styles.comparison }>
+				<MetricWithComparison
+					value={ tile.value as number }
+					previousValue={ tile.previousValue }
+					wrap="wrap"
+					dataFormat={
+						tileCurrencyCode === undefined
+							? format
+							: { ...format, options: { ...format.options, currencyCode: tileCurrencyCode } }
+					}
+				/>
+			</span>
+		);
+	}
+
+	return (
+		<MetricValue
+			value={ tile.value as number }
+			dataFormat={ format }
+			currencyCode={ tileCurrencyCode }
+			className={ styles.value }
+		/>
+	);
+}
+
+/**
+ * Lays metric tiles out by the size of its own box; the four layouts and their
+ * thresholds live in `_metric-tile-layouts.scss`.
+ *
+ * The grid is a size container, so it takes no height of its own: render it
+ * inside a definite-height flex column (or a `height: 100%` chain) or it
+ * collapses to 0x0.
+ *
+ * @param {MetricTileGridProps} props - The component props.
+ * @return The rendered grid.
+ */
+export function MetricTileGrid( {
+	className,
+	tiles,
+	dataFormat = { type: 'number' },
+	currencyCode,
+}: MetricTileGridProps ) {
+	return (
+		<div className={ clsx( styles.container, className ) }>
+			<div className={ styles.grid } role="list">
+				{ tiles.map( tile => (
+					<div key={ tile.key } className={ clsx( styles.tile, tile.className ) } role="listitem">
+						<MetricNoteTooltip note={ tile.note } className={ styles.header }>
+							{ tile.icon && <Icon icon={ tile.icon } size={ 20 } className={ styles.icon } /> }
+							<Text className={ styles.label }>{ tile.label }</Text>
+						</MetricNoteTooltip>
+						<MetricTileValue
+							tile={ tile }
+							dataFormat={ dataFormat }
+							currencyCode={ currencyCode }
+						/>
+					</div>
+				) ) }
+			</div>
+		</div>
+	);
+}

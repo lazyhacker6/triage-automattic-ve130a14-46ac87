@@ -1,0 +1,29 @@
+{
+	"private": true,
+	"scripts": {
+		"build": "pnpm run clean && pnpm run build-js",
+		"build-js": "webpack",
+		"build-production": "pnpm run clean && pnpm run build-production-js && pnpm run validate",
+		"build-production-js": "NODE_ENV=production BABEL_ENV=production pnpm run build-js",
+		"clean": "rm -rf build",
+		"test": "jest --config=tests/jest.config.cjs",
+		"test-coverage": "pnpm run test --coverage",
+		"validate": "pnpm exec validate-es build/"
+	},
+	"browserslist": "extends @wordpress/browserslist-config",
+	"dependencies": {
+		"@automattic/jetpack-script-data": "workspace:*",
+		"@automattic/jetpack-shared-stores": "workspace:*",
+		"@wordpress/i18n": "7.1.0",
+		"react": "19.3.0"
+	},
+	"devDependencies": {
+		"@automattic/jetpack-webpack-config": "workspace:*",
+		"@wordpress/browserslist-config": "7.1.0",
+		"concurrently": "10.0.5",
+		"jest": "30.5.2",
+		"md5-es": "1.8.2",
+		"webpack": "5.112.2",
+		"webpack-cli": "7.2.1"
+	}
+}

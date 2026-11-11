@@ -1,0 +1,416 @@
+import {
+	createContext,
+	useCallback,
+	useMemo,
+	useState,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+} from 'react';
+// Side-effect import: emits the `--a8c-charts-*` catalog, scoped to the `a8c-charts-scope` class applied to this component's wrapper below. Every chart either sits under a `GlobalChartsProvider` or auto-mounts its own, so importing it here guarantees the catalog always reaches the bundle.
+//
+// This must be a direct import of the stylesheet, not through a re-export barrel: a barrel `.ts` file doesn't match this package's `sideEffects` glob (only `*.css`/`*.scss` do), so tsdown/Rolldown treats an unused barrel import as side-effect-free and drops it — taking the nested stylesheet import with it. The file also can't be named `*.module.scss`: it declares zero CSS-module class names (only a `:where()`-wrapped selector), and `@tsdown/css` marks a `.module.*` file's generated JS proxy `moduleSideEffects: false` (tree-shakeable unless a class name is read); a plain stylesheet gets `moduleSideEffects: "no-treeshake"` instead, so it always ships. `tools/assert-charts-scope-emitted.ts` fails `pnpm run build` if this regresses — a passing test suite alone does not catch a dropped stylesheet.
+import '../../styles/chart-scope.scss';
+import { CHART_SCOPE_CLASS } from '../../styles/chart-scope-class';
+import {
+	createCssVariableResolver,
+	getItemShapeStyles,
+	getSeriesBarStyles,
+	getSeriesLineStyles,
+	isValidHexColor,
+	mergeThemes,
+	resolveCssVariable,
+	normalizeColorToHex,
+} from '../../utils';
+import { sanitizeFormatting } from '../../utils/date-formatting';
+// Imported from the module rather than the `chart-scope` barrel: the barrel also pulls `use-standalone-scope-class`, which imports `GlobalChartsContext` back from this file. That cycle resolves today only because the binding is read lazily inside the hook body.
+import { ChartScopeContext } from '../chart-scope/chart-scope-context';
+import {
+	BACKGROUND_FALLBACK,
+	CATALOG_POINTERS,
+	LABEL_FALLBACK,
+	LABEL_INVERSE_FALLBACK,
+} from './private/catalog-pointers';
+import { createPaletteGenerator } from './private/palette-generator';
+import { resolveOpaqueHex } from './private/resolve-opaque-hex';
+import { SERIES_PALETTE_POINTERS, SERIES_SLOT_1_FALLBACK } from './private/series-palette';
+import { defaultTheme } from './themes';
+import type { GlobalChartsContextValue, ChartRegistration } from './types';
+import type { ChartTheme, CompleteChartTheme } from '../../types';
+import type { FC, ReactNode } from 'react';
+
+interface ColorCache {
+	colors: string[];
+	background: string;
+	labelColors: string[];
+	colorAt: ( index: number ) => string;
+}
+
+const PLACEHOLDER_LABEL_COLORS = [ LABEL_FALLBACK, LABEL_INVERSE_FALLBACK ];
+
+export const GlobalChartsContext = createContext< GlobalChartsContextValue | null >( null );
+
+export interface GlobalChartsProviderProps {
+	children: ReactNode;
+	theme?: Partial< ChartTheme >;
+	/**
+	 * BCP-47 language tag every date label is rendered in, e.g. `de-DE`.
+	 * Defaults to the viewer's browser locale.
+	 */
+	locale?: string;
+	/**
+	 * IANA time zone every date label is dated in, e.g. `Asia/Tokyo`.
+	 * Defaults to the viewer's browser time zone.
+	 */
+	timeZone?: string;
+}
+
+export const GlobalChartsProvider: FC< GlobalChartsProviderProps > = ( {
+	children,
+	theme,
+	locale,
+	timeZone,
+} ) => {
+	const [ charts, setCharts ] = useState< Map< string, ChartRegistration > >( () => new Map() );
+	// Track hidden series per chart: chartId -> Set<seriesLabel>
+	const [ hiddenSeries, setHiddenSeries ] = useState< Map< string, Set< string > > >(
+		() => new Map()
+	);
+	// Which charts have had their defaults seeded. Kept apart from `hiddenSeries`
+	// because that map drops a chart's entry once its hidden set empties, so an
+	// absent entry cannot tell "never seeded" from "the reader revealed the lot".
+	const seededCharts = useRef< Set< string > >( new Set() );
+
+	// Ref to the wrapper element for resolving scoped CSS variables
+	const wrapperRef = useRef< HTMLDivElement >( null );
+	const [ scopeNode, setScopeNode ] = useState< HTMLElement | null >( null );
+
+	const setWrapperNode = useCallback( ( node: HTMLDivElement | null ) => {
+		wrapperRef.current = node;
+		setScopeNode( node );
+	}, [] );
+
+	const providerTheme: CompleteChartTheme = useMemo(
+		() => ( theme ? mergeThemes( defaultTheme, theme ) : defaultTheme ),
+		[ theme ]
+	);
+
+	// Cache expensive color computations that only change when theme colors change
+	// Using useState + useLayoutEffect instead of useMemo to ensure CSS variables
+	// in <style> tags are applied to the DOM before we try to resolve them
+	// Seeded with what slot 1 resolves to where no DOM answers, so a one-series first render
+	// never builds the candidate grid and SSR matches the unthemed client palette.
+	const [ colorCache, setColorCache ] = useState< ColorCache >( () => ( {
+		colors: [],
+		background: BACKGROUND_FALLBACK,
+		labelColors: PLACEHOLDER_LABEL_COLORS,
+		colorAt: createPaletteGenerator(
+			[ SERIES_SLOT_1_FALLBACK ],
+			BACKGROUND_FALLBACK,
+			PLACEHOLDER_LABEL_COLORS
+		),
+	} ) );
+
+	// Track if the color palette has been resolved from the DOM
+	// Useful for animations that should only run after the color palette is resolved
+	const [ isColorPaletteResolved, setIsColorPaletteResolved ] = useState( false );
+
+	// A layout effect rather than a memo: the catalog reaches the wrapper as a stylesheet, which
+	// must be applied before `getComputedStyle` can answer. Mount only — the slots are a fixed
+	// manifest and `wrapperRef` is stable for the provider's life.
+
+	useLayoutEffect( () => {
+		setIsColorPaletteResolved( false );
+		const resolvedColors: string[] = [];
+
+		for ( const color of SERIES_PALETTE_POINTERS ) {
+			const normalizedColor = normalizeColorToHex( color, wrapperRef.current, resolveCssVariable );
+
+			// An unset palette slot returns its own `var()` unchanged, so this is also what
+			// compacts the palette: a slot the consumer never set drops out here.
+			if ( isValidHexColor( normalizedColor ) ) {
+				resolvedColors.push( normalizedColor );
+			}
+		}
+
+		const resolveAtWrapper = createCssVariableResolver( wrapperRef.current );
+		const backgroundHex =
+			resolveOpaqueHex( CATALOG_POINTERS.background, resolveAtWrapper ) ?? BACKGROUND_FALLBACK;
+		// The two roles pie labels choose between on a fill; one left see-through is never painted there.
+		const labelColors = [ CATALOG_POINTERS.label, CATALOG_POINTERS.labelInverse ]
+			.map( pointer => resolveOpaqueHex( pointer, resolveAtWrapper ) )
+			.filter( ( hex ): hex is string => hex !== null );
+
+		setColorCache( {
+			colors: resolvedColors,
+			background: backgroundHex,
+			labelColors,
+			colorAt: createPaletteGenerator( resolvedColors, backgroundHex, labelColors ),
+		} );
+	}, [] );
+
+	useEffect( () => {
+		if ( colorCache.colors.length > 0 ) {
+			setIsColorPaletteResolved( true );
+		}
+	}, [ colorCache ] );
+
+	const [ groupToColorMap, setGroupToColorMap ] = useState< Map< string, string > >(
+		() => new Map()
+	);
+
+	// Keyed on the resolved colors, background and labels, not the cache object, so a consumer passing an
+	// inline `theme` cannot reset the map on every render.
+	const paletteKey = `${ colorCache.colors.join( ',' ) }|${ colorCache.background }|${ colorCache.labelColors.join( ',' ) }`;
+
+	useEffect( () => {
+		// Create a completely new Map instance to trigger dependencies, e.g. useChartLegendItems
+		setGroupToColorMap( new Map() );
+	}, [ paletteKey ] );
+
+	const registerChart = useCallback( ( id: string, data: ChartRegistration ) => {
+		setCharts( prev => new Map( prev ).set( id, data ) );
+	}, [] );
+
+	const unregisterChart = useCallback( ( id: string ) => {
+		setCharts( prev => {
+			const newMap = new Map( prev );
+			newMap.delete( id );
+			return newMap;
+		} );
+	}, [] );
+
+	const getChartData = useCallback(
+		( id: string ) => {
+			return charts.get( id );
+		},
+		[ charts ]
+	);
+
+	const resolveColor = useCallback(
+		( {
+			group,
+			index,
+			overrideColor,
+		}: {
+			group?: string;
+			index: number;
+			overrideColor?: string;
+		} ): string => {
+			// Highest precedence: eg. explicit series stroke or chart color prop
+			if ( overrideColor ) {
+				return normalizeColorToHex( overrideColor, wrapperRef.current, resolveCssVariable );
+			}
+
+			// If group provided, maintain a stable assignment
+			if ( group ) {
+				const existing = groupToColorMap.get( group );
+
+				if ( existing ) {
+					return existing;
+				}
+
+				// Use map size as index to assign colors sequentially (0, 1, 2...)
+				// ensuring each new group gets the next available palette color
+				const assignedCount = groupToColorMap.size;
+				const color = colorCache.colorAt( assignedCount );
+				groupToColorMap.set( group, color );
+
+				return color;
+			}
+
+			return colorCache.colorAt( index );
+		},
+		[ colorCache, groupToColorMap ]
+	);
+
+	const getElementStyles = useCallback< GlobalChartsContextValue[ 'getElementStyles' ] >(
+		( { data, index, overrideColor, legendShape } ) => {
+			const isSeriesData = data && typeof data === 'object' && 'data' in data;
+			// DataPointPercentage has a numeric 'value' directly, unlike SeriesData which has 'data' array
+			const isPointPercentageData =
+				data &&
+				typeof data === 'object' &&
+				'value' in data &&
+				typeof data.value === 'number' &&
+				! ( 'data' in data );
+
+			return {
+				color: resolveColor( {
+					group: data?.group,
+					index,
+					overrideColor:
+						overrideColor ||
+						( isSeriesData && data?.options?.stroke ) ||
+						( isPointPercentageData && data?.color ),
+				} ),
+				lineStyles: isSeriesData ? getSeriesLineStyles( data, index, providerTheme ) : {},
+				barStyles: isSeriesData ? getSeriesBarStyles( data, index, providerTheme ) : {},
+				glyph: providerTheme.glyphs?.[ index ],
+				shapeStyles: isSeriesData
+					? getItemShapeStyles( data, index, providerTheme, legendShape )
+					: {},
+			};
+		},
+		[ providerTheme, resolveColor ]
+	);
+
+	// Keep hidden-series updates and no-op detection consistent across setters.
+	const updateHiddenSeries = useCallback(
+		( chartId: string, update: ( current: Set< string > ) => Set< string > ) => {
+			setHiddenSeries( prev => {
+				const current = prev.get( chartId );
+				const next = update( new Set( current ?? [] ) );
+
+				if ( ! current && next.size === 0 ) {
+					return prev;
+				}
+
+				// Preserve identity for no-op updates.
+				if (
+					current &&
+					current.size === next.size &&
+					[ ...next ].every( label => current.has( label ) )
+				) {
+					return prev;
+				}
+
+				const newMap = new Map( prev );
+				if ( next.size === 0 ) {
+					newMap.delete( chartId );
+				} else {
+					newMap.set( chartId, next );
+				}
+
+				return newMap;
+			} );
+		},
+		[]
+	);
+
+	const toggleSeriesVisibility = useCallback(
+		( chartId: string, seriesLabel: string ) => {
+			updateHiddenSeries( chartId, current => {
+				if ( current.has( seriesLabel ) ) {
+					current.delete( seriesLabel );
+				} else {
+					current.add( seriesLabel );
+				}
+				return current;
+			} );
+		},
+		[ updateHiddenSeries ]
+	);
+
+	const setSeriesVisibility = useCallback(
+		( chartId: string, seriesLabel: string, visible: boolean ) => {
+			updateHiddenSeries( chartId, current => {
+				if ( visible ) {
+					current.delete( seriesLabel );
+				} else {
+					current.add( seriesLabel );
+				}
+				return current;
+			} );
+		},
+		[ updateHiddenSeries ]
+	);
+
+	const setChartHiddenSeries = useCallback(
+		( chartId: string, seriesLabels: readonly string[] ) => {
+			updateHiddenSeries( chartId, () => new Set( seriesLabels ) );
+		},
+		[ updateHiddenSeries ]
+	);
+
+	const hasSeededChart = useCallback(
+		( chartId: string ) => seededCharts.current.has( chartId ),
+		[]
+	);
+
+	const seedChartHiddenSeries = useCallback(
+		( chartId: string, seriesLabels: readonly string[] ) => {
+			if ( seededCharts.current.has( chartId ) ) {
+				return;
+			}
+
+			seededCharts.current.add( chartId );
+			setChartHiddenSeries( chartId, seriesLabels );
+		},
+		[ setChartHiddenSeries ]
+	);
+
+	const isSeriesVisible = useCallback(
+		( chartId: string, seriesLabel: string ) => {
+			const chartHidden = hiddenSeries.get( chartId );
+			return ! chartHidden || ! chartHidden.has( seriesLabel );
+		},
+		[ hiddenSeries ]
+	);
+
+	const getHiddenSeries = useCallback(
+		( chartId: string ): Set< string > => {
+			const set = hiddenSeries.get( chartId );
+			return set ? new Set( set ) : new Set< string >();
+		},
+		[ hiddenSeries ]
+	);
+
+	// Held as one object so a chart's formatting memos key on a single stable reference.
+	const formatting = useMemo(
+		() => sanitizeFormatting( { locale, timeZone } ),
+		[ locale, timeZone ]
+	);
+
+	const value: GlobalChartsContextValue = useMemo(
+		() => ( {
+			charts,
+			registerChart,
+			unregisterChart,
+			getChartData,
+			theme: providerTheme,
+			formatting,
+			getElementStyles,
+			backgroundColor: colorCache.background,
+			toggleSeriesVisibility,
+			setSeriesVisibility,
+			setChartHiddenSeries,
+			seedChartHiddenSeries,
+			hasSeededChart,
+			isSeriesVisible,
+			getHiddenSeries,
+			isColorPaletteResolved,
+		} ),
+		[
+			charts,
+			registerChart,
+			unregisterChart,
+			getChartData,
+			providerTheme,
+			formatting,
+			getElementStyles,
+			colorCache.background,
+			toggleSeriesVisibility,
+			setSeriesVisibility,
+			setChartHiddenSeries,
+			seedChartHiddenSeries,
+			hasSeededChart,
+			isSeriesVisible,
+			getHiddenSeries,
+			isColorPaletteResolved,
+		]
+	);
+
+	return (
+		<GlobalChartsContext.Provider value={ value }>
+			<div
+				ref={ setWrapperNode }
+				className={ CHART_SCOPE_CLASS }
+				data-testid="charts-scope"
+				style={ { display: 'contents' } }
+			>
+				<ChartScopeContext.Provider value={ scopeNode }>{ children }</ChartScopeContext.Provider>
+			</div>
+		</GlobalChartsContext.Provider>
+	);
+};

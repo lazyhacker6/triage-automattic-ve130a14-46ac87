@@ -1,0 +1,345 @@
+/**
+ * External dependencies
+ */
+import {
+	LineChart,
+	Stack,
+	getBucketInfo,
+	useGlobalChartsContext,
+} from '@jetpack-premium-analytics/externals';
+import { formatDate, type DateFormatName } from '@jetpack-premium-analytics/formatters';
+import clsx from 'clsx';
+import { useCallback, useId, useMemo } from 'react';
+import { type ComponentProps } from 'react';
+/**
+ * Internal dependencies
+ */
+import { RESIZE_DEBOUNCE_MS } from '../../constants';
+import {
+	isEmptyChartData,
+	getFixedYAxis,
+	getPaddedYAxis,
+	getPinnedYTicks,
+	getYTickDecimals,
+	getYTickFormat,
+	formatBucketTooltipDate,
+	toTickResolution,
+} from '../../helpers';
+import { useChartName } from '../../hooks/use-chart-name';
+import { useComparativeLegend } from '../../hooks/use-comparative-legend';
+import { DatedTooltip, buildDatedTooltipModel } from '../chart-tooltip';
+import styles from './comparative-line-chart.module.scss';
+import { alignSeriesDates } from './utils';
+import type {
+	ComparativeLineChartSeries,
+	SeriesStyle,
+	TooltipExtraSeries,
+	ComparativeDatePointDate,
+} from './types';
+import type { BucketResolution, ChartBaseline } from '../../helpers';
+import type { DataFormat } from '../../types';
+
+/** Series styles, with the explicit `styles` prop taking priority over `series[].options`. */
+function resolveSeriesStyles(
+	stylesFromProp: SeriesStyle[] | undefined,
+	series: ComparativeLineChartSeries[]
+): SeriesStyle[] {
+	if ( stylesFromProp?.length ) {
+		return stylesFromProp;
+	}
+
+	return series.map( s => {
+		const lineStyle = s.options?.seriesLineStyle;
+
+		return {
+			stroke: s.options?.stroke ?? '',
+			strokeWidth: lineStyle?.strokeWidth,
+			strokeDasharray: lineStyle?.strokeDasharray,
+			strokeLinecap: lineStyle?.strokeLinecap,
+			strokeLinejoin: lineStyle?.strokeLinejoin,
+			opacity: lineStyle?.opacity,
+		};
+	} );
+}
+
+function applyStylesToSeries(
+	series: ComparativeLineChartSeries[],
+	resolvedStyles: SeriesStyle[]
+): ComparativeLineChartSeries[] {
+	return series.map( ( seriesItem, index ) => {
+		const style = resolvedStyles[ index ] ?? resolvedStyles[ 0 ];
+
+		if ( ! style?.stroke ) {
+			return seriesItem;
+		}
+
+		const { stroke, ...lineStyleProps } = style;
+		return {
+			...seriesItem,
+			options: {
+				...( seriesItem.options ?? {} ),
+				stroke,
+				seriesLineStyle: lineStyleProps,
+			},
+		};
+	} );
+}
+
+type LineChartProps = ComponentProps< typeof LineChart >;
+type RenderTooltipParams = Parameters< NonNullable< LineChartProps[ 'renderTooltip' ] > >[ 0 ];
+
+export type ComparativeLineChartProps = {
+	/** A series may carry its own `options.stroke` / `options.seriesLineStyle` as a fallback. */
+	series: ComparativeLineChartSeries[];
+
+	/** Styles by series index; these win over anything in `series[].options`. */
+	styles?: SeriesStyle[];
+
+	className?: string;
+
+	/** What the chart shows, when that is not the widget title; the chart is named "Chart: <title>". */
+	chartTitle?: string;
+
+	dataFormat: DataFormat;
+
+	/** Named date format for the X-axis ticks. Uses the chart default when omitted. */
+	tickFormat?: DateFormatName;
+
+	/**
+	 * The series' bucket size. Declaring it lets the automatic tick formatter read its
+	 * regime from a known granularity rather than the gaps between points, which a
+	 * single-bucket or DST-shortened series makes unreadable.
+	 */
+	tickResolution?: BucketResolution;
+
+	/**
+	 * Drop the axes, grid and legend while the chart is shorter than
+	 * `theme.compactWhenShort.below`.
+	 * Forwarded to `LineChart`.
+	 */
+	compactWhenShort?: boolean;
+
+	/**
+	 * Let the reader click legend items to show and hide series; the first item stays
+	 * locked so the chart is never emptied. Off by default: a chart drawing one metric
+	 * has nothing to compare.
+	 */
+	legendInteractive?: boolean;
+
+	/**
+	 * Names the comparison in each metric's previous-period legend item, e.g.
+	 * "Prev. 30 days". Defaults to "Previous period".
+	 */
+	comparisonLabel?: string;
+
+	/**
+	 * Series the tooltip reads out but the chart does not draw; see
+	 * `TooltipExtraSeries` for what listing one changes about the rows.
+	 */
+	tooltipExtras?: TooltipExtraSeries[];
+
+	/**
+	 * Where the value axis starts. `zero` (the default) suits a per-period metric;
+	 * `padded` keeps a cumulative count's small changes visible. A percentage
+	 * metric and an all-zero period pin their own axis either way.
+	 */
+	baseline?: ChartBaseline;
+} & Omit<
+	ComponentProps< typeof LineChart >,
+	| 'data'
+	| 'options'
+	| 'legend'
+	| 'withLegendGlyph'
+	| 'smoothing'
+	| 'showLegend'
+	| 'withGradientFill'
+	| 'resizeDebounceTime'
+	| 'withTooltips'
+	| 'renderTooltip'
+	| 'ariaLabel'
+>;
+
+export function ComparativeLineChart( {
+	series,
+	styles: stylesProp,
+	className,
+	chartId,
+	chartTitle,
+	dataFormat,
+	tickFormat: xTickFormatType,
+	tickResolution,
+	maxWidth = Infinity,
+	compactWhenShort = false,
+	defaultHiddenSeries,
+	legendInteractive = false,
+	comparisonLabel,
+	tooltipExtras,
+	baseline = 'zero',
+	onPointerDown,
+	onPointerUp,
+	onDatumActivate,
+}: ComparativeLineChartProps ) {
+	const chartName = useChartName( chartTitle );
+	const libraryTickResolution = toTickResolution( tickResolution );
+	const { displayResolution } = getBucketInfo( series, libraryTickResolution );
+	const fallbackChartId = useId();
+	const resolvedChartId = chartId ?? fallbackChartId;
+	const { getHiddenSeries } = useGlobalChartsContext();
+	// Also used for tooltip styling, not only to decorate the series data.
+	const resolvedStyles = useMemo< SeriesStyle[] >(
+		() => resolveSeriesStyles( stylesProp, series ),
+		[ stylesProp, series ]
+	);
+
+	const formatTooltipBucket = useCallback(
+		( point: ComparativeDatePointDate ) =>
+			formatBucketTooltipDate( point, displayResolution, tickResolution ),
+		[ displayResolution, tickResolution ]
+	);
+
+	const renderTooltip = useCallback(
+		( params: RenderTooltipParams ) => {
+			const model = buildDatedTooltipModel( {
+				tooltipData: params.tooltipData,
+				series,
+				seriesStyles: resolvedStyles,
+				extras: tooltipExtras,
+				dataFormat,
+				formatDate: formatTooltipBucket,
+			} );
+
+			return model && <DatedTooltip model={ model } indicatorType="line" />;
+		},
+		[ dataFormat, resolvedStyles, series, tooltipExtras, formatTooltipBucket ]
+	);
+
+	const alignedSeries = useMemo( () => alignSeriesDates( series ), [ series ] );
+
+	const styledSeries = useMemo( () => {
+		// Without a styles prop, the series already carry their styles in options.
+		if ( ! stylesProp?.length ) {
+			return alignedSeries;
+		}
+		return applyStylesToSeries( alignedSeries, resolvedStyles );
+	}, [ stylesProp, alignedSeries, resolvedStyles ] );
+
+	const { config: legendConfig, items: legendItems } = useComparativeLegend(
+		styledSeries,
+		legendInteractive,
+		comparisonLabel,
+		'line'
+	);
+
+	const isEmptyData = useMemo( () => isEmptyChartData( styledSeries ), [ styledSeries ] );
+	// An all-zero selected metric must not hide the extras that do have data.
+	const hasTooltipRows = useMemo(
+		() => ! isEmptyData || ! isEmptyChartData( tooltipExtras ?? [] ),
+		[ isEmptyData, tooltipExtras ]
+	);
+
+	// A percentage metric or an all-zero period pins its own axis; otherwise a
+	// padded baseline pads what the legend leaves visible. Null lets the chart fit
+	// the data above zero.
+	const pinnedYAxis = useMemo( () => {
+		const fixedYAxis = getFixedYAxis( dataFormat.type, isEmptyData );
+		if ( fixedYAxis || baseline !== 'padded' ) {
+			return fixedYAxis;
+		}
+		const hiddenSeries = getHiddenSeries( resolvedChartId );
+		return getPaddedYAxis( styledSeries.filter( s => ! hiddenSeries.has( s.label ) ) );
+	}, [ dataFormat.type, isEmptyData, baseline, styledSeries, getHiddenSeries, resolvedChartId ] );
+
+	// Pinned ticks let the label format see exactly what the axis draws.
+	const yTicks = useMemo(
+		() => ( pinnedYAxis ? getPinnedYTicks( pinnedYAxis.domain ) : undefined ),
+		[ pinnedYAxis ]
+	);
+	const currencyCode = dataFormat.options?.currencyCode;
+	const yTickFormat = useMemo(
+		() => getYTickFormat( dataFormat.type, yTicks, currencyCode ),
+		[ dataFormat.type, yTicks, currencyCode ]
+	);
+	const yTickDecimals = getYTickDecimals( dataFormat.type, currencyCode );
+
+	const xTickFormat = useCallback(
+		( date: number ) => formatDate( date, xTickFormatType ),
+		[ xTickFormatType ]
+	);
+
+	const chartOptions = useMemo( () => {
+		const baseOptions = {
+			axis: {
+				x: {
+					// Must stay conditional: `formatDate` defaults to `medium`, so passing
+					// `xTickFormat` unconditionally puts full dates on every tick.
+					tickFormat: xTickFormatType ? xTickFormat : undefined,
+					tickResolution: libraryTickResolution,
+				},
+				y: {
+					tickFormat: yTickFormat,
+					tickDecimals: yTickDecimals,
+					...( yTicks ? { tickValues: yTicks } : {} ),
+				},
+			},
+		};
+
+		if ( pinnedYAxis ) {
+			return { ...baseOptions, yScale: { domain: pinnedYAxis.domain } };
+		}
+
+		// `zero` rather than a domain, so hiding a series still rescales the axis.
+		return { ...baseOptions, yScale: { zero: true } };
+	}, [
+		xTickFormat,
+		xTickFormatType,
+		libraryTickResolution,
+		yTickFormat,
+		yTickDecimals,
+		yTicks,
+		pinnedYAxis,
+	] );
+
+	return (
+		<Stack direction="column" className={ clsx( styles.chart, className ) }>
+			<LineChart
+				chartId={ resolvedChartId }
+				ariaLabel={ chartName }
+				className={ styles.chartContent }
+				data={ styledSeries }
+				options={ chartOptions }
+				defaultHiddenSeries={ defaultHiddenSeries }
+				legend={ legendConfig }
+				maxWidth={ maxWidth }
+				compactWhenShort={ compactWhenShort }
+				resizeDebounceTime={ RESIZE_DEBOUNCE_MS }
+				withLegendGlyph={ false }
+				showLegend={ false }
+				curveType="monotone"
+				withGradientFill
+				withTooltips={ !! renderTooltip && hasTooltipRows }
+				renderTooltip={ renderTooltip }
+				onPointerDown={ onPointerDown }
+				onPointerUp={ onPointerUp }
+				onDatumActivate={ onDatumActivate }
+			>
+				<LineChart.Legend
+					items={ legendItems }
+					interactive={ legendInteractive }
+					shape="line"
+					className={ styles.legend }
+					itemClassName={ styles.legendItem }
+					itemStyles={ {
+						margin: 0,
+					} }
+					labelClassName={ styles.legendLabel }
+					labelStyles={ {
+						maxWidth: '100%',
+						textOverflow: 'ellipsis',
+						margin: 0,
+					} }
+					shapeStyles={ { margin: 0 } }
+				/>
+			</LineChart>
+		</Stack>
+	);
+}

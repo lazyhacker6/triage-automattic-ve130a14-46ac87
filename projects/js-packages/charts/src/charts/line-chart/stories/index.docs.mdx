@@ -1,0 +1,789 @@
+import { Meta, Canvas, Story, Source } from '@storybook/addon-docs/blocks';
+import * as LineChartStories from './index.stories';
+import * as GlyphStories from './glyph.stories';
+import * as TooltipStories from './tooltip.stories';
+
+<Meta title="JS Packages/Charts Library/Charts/Line Chart" of={ LineChartStories } />
+
+# Line Chart
+
+Line Charts visualize data trends over time or other continuous variables, connecting data points with smooth or linear lines. They excel at showing patterns, trends, and relationships in time-series data.
+
+<Canvas of={ LineChartStories.Default } />
+
+## Overview
+
+The Line Chart component provides a flexible, accessible, and highly customizable solution for displaying temporal data. Built on `@visx/xychart`, it supports multiple data series, various curve types, interactive tooltips, legends, and compound components for advanced features like annotations:
+
+<Source
+	language="jsx"
+	code={ `import { LineChart } from '@automattic/charts';
+import '@automattic/charts/style.css';
+
+	<LineChart data={ data }>
+		{/* Optional child components for advanced features */}
+		<LineChart.AnnotationsOverlay>
+			<LineChart.Annotation
+				datum={ { date: new Date('2024-01-01'), value: 100 } }
+				title="Product Launch"
+			/>
+		</LineChart.AnnotationsOverlay>
+	</LineChart>` }
+/>
+
+## API Reference
+
+For detailed information about component props, types, and method signatures, see the [Line Chart API Reference](./?path=/docs/js-packages-charts-library-charts-line-chart-api-reference--docs).
+
+## Basic Usage
+
+### Simple Line Chart
+
+The simplest line chart requires only a `data` prop with time-series data:
+
+<Canvas of={ LineChartStories.SingleSeries } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={[
+			{
+				label: 'Temperature',
+				data: [
+					{ date: new Date('2024-01-01'), value: 20 },
+					{ date: new Date('2024-01-02'), value: 25 },
+					{ date: new Date('2024-01-03'), value: 18 },
+				],
+				options: {}
+			}
+		]}
+	/>` }
+/>
+
+### Required Props
+
+- **`data`**: Array of series data, each containing `label`, `data` array, and optional `options`
+
+### Optional Props
+
+**Layout & Dimensions:**
+- **`width`**: Chart width in pixels (responsive by default)
+- **`height`**: Chart height in pixels (responsive by default)
+- **`margin`**: Custom chart margins
+- **`className`**: Additional CSS class name for the chart container
+- **`chartId`**: Unique identifier for the chart (auto-generated if not provided)
+- **`aspectRatio`**: Height-to-width ratio (e.g. `0.5`) for responsive charts; the chart is contained within its parent on both axes. When omitted, fills the parent container's height
+- **`maxWidth`**: Maximum width constraint for responsive charts (default: `1200`)
+- **`resizeDebounceTime`**: Debounce delay for resize events in ms (default: `300`)
+
+**Visual Styling:**
+- **`curveType`**: Line curve style (`'smooth'`, `'linear'`, `'monotone'`)
+- **`smoothing`**: Catmull-Rom smoothing, on by default. Ignored when `curveType` is set
+- **`withGradientFill`**: Fill area under lines with gradient (`false` by default)
+- **`withStartGlyphs`**: Show markers at the first data point of each series (`false` by default)
+- **`renderGlyph`**: Custom glyph render function
+- **`glyphStyle`**: Styling for chart glyphs
+- **`gridVisibility`**: Control grid visibility (`'x'`, `'y'`, `'xy'`, or `'none'`)
+
+**Interactivity:**
+- **`withTooltips`**: Enable interactive tooltips (`true` by default)
+- **`withTooltipCrosshairs`**: Show crosshair guides with tooltips
+- **`renderTooltip`**: Custom tooltip render function
+- **`onPointerDown`**: Pointer down event handler
+- **`onPointerUp`**: Pointer up event handler
+- **`onPointerMove`**: Pointer move event handler
+- **`onPointerOut`**: Pointer out event handler
+
+**Legend:**
+- **`showLegend`**: Display chart legend (`false` by default)
+- **`legend`**: Legend configuration object (`ChartLegendConfig`) for controlling orientation, position, alignment, shape, interactivity, and styling
+- **`defaultHiddenSeries`**: Series labels hidden from the first defined value; later values for the same `chartId` are ignored
+- **`withLegendGlyph`**: Use custom glyphs in legend (`false` by default)
+
+**Advanced:**
+- **`options`**: Advanced axis and scale configuration
+- **`children`**: Child components (e.g., annotations)
+
+For detailed prop information, type definitions, gradient configuration options, and complete annotation API reference, see the [Line Chart API Reference](./?path=/docs/js-packages-charts-library-charts-line-chart-api-reference--docs).
+
+## Curve Types
+
+### Linear Curves
+
+Connect data points with straight lines for precise, unsmoothed visualization:
+
+<Canvas of={ LineChartStories.CurveTypes } />
+
+### Smooth Curves (Catmull-Rom)
+
+Create flowing curves that pass through all data points using Catmull-Rom spline interpolation:
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		curveType="smooth"
+	/>` }
+/>
+
+### Monotone X Curves
+
+Prevent overshooting while maintaining smoothness, ideal for data with sharp changes:
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		curveType="monotone"
+	/>` }
+/>
+
+**When to use each type:**
+- **Linear**: Raw data visualization, technical charts, precise measurements
+- **Smooth**: Aesthetic presentations, trend visualization, marketing materials
+- **Monotone**: Financial data, scientific measurements where overshooting would be misleading
+
+## Multiple Series
+
+### Multi-Series Charts
+
+Display multiple data series with automatic color differentiation:
+
+<Canvas of={ LineChartStories.Default } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={[
+			{
+				label: 'London Temperature',
+				data: londonData,
+				options: {}
+			},
+			{
+				label: 'New York Temperature',
+				data: newYorkData,
+				options: {}
+			}
+		]}
+	/>` }
+/>
+
+### Custom Series Styling
+
+Override individual series appearance with the `options` prop:
+
+<Canvas of={ LineChartStories.BrokenLine } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={[
+			{
+				label: 'Projected Data',
+				data: projectedData,
+				options: {
+					stroke: '#ff6b6b',
+					seriesLineStyle: {
+						strokeDasharray: '5 5 1'
+					},
+					legendShapeStyle: {
+						strokeDasharray: '5 5 1'
+					}
+				}
+			}
+		]}
+	/>` }
+/>
+
+## Semantic Line Types
+
+Use semantic line types to distinguish between different data categories with automatic styling.
+
+### Comparison type
+
+The `comparison` type can be used to differentiate comparison data from primary data series. Give the primary series and its comparison overlay the same `group` so they pair up. By default each still gets its own legend item; set `legend.collapseGroups` to fold them into one, and pair it with `legend.comparisonItem` to append a static item explaining the dashed overlay:
+
+<Canvas of={ LineChartStories.ComparisonSingle } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={[
+			{
+				label: 'Views',
+				group: 'views',
+				data: currentPeriodData,
+			},
+			{
+				label: 'Views — previous',
+				group: 'views',
+				options: { type: 'comparison' },
+				data: previousPeriodData,
+			},
+		]}
+		showLegend={true}
+	/>` }
+/>
+
+Pair several metrics side by side, each with its own comparison overlay. With `legend.collapseGroups`, each group renders as a single item labeled by its primary series. Add `legend.interactive` and clicking that item toggles the metric's current and previous-period lines together — without `collapseGroups`, each line keeps its own item and toggles alone. By default the value axis rescales to the visible series as they are toggled; this story sets `rescaleYOnVisibilityChange={ false }` to pin it to the full data range so the baseline doesn't jump. When every series is hidden the axes are dropped and only the empty state is shown.
+
+<Canvas of={ LineChartStories.ComparisonMulti } />
+
+To name each metric's comparison instead, pass `legend.comparisonSeriesItems` a function. Every comparison series then gets its own static item, labeled by calling the function with its metric's label (for example `` label => `${ label } (Prev. period)` ``), and the item is left out while its metric is hidden.
+
+### Theme Integration
+
+Comparison styling can be set in your theme configuration:
+
+<Source
+	language="jsx"
+	code={ `// Theme configuration example
+	const customTheme = {
+		lineChart: {
+			lineStyles: {
+				comparison: {
+					strokeDasharray: '4 4',
+					strokeLinecap: 'square',
+					strokeWidth: 1.5
+				}
+			}
+		}
+	};` }
+/>
+
+## Visual Features
+
+### Gradient Fill
+
+Add visual depth with gradient fills under line series. The gradient system supports both simple fills and complex multi-stop gradients for sophisticated visual effects.
+
+#### Basic Gradient Fill
+
+Enable gradient fills for all series with the `withGradientFill` prop:
+
+<Canvas of={ LineChartStories.GradientFilled } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		withGradientFill={true}
+	/>` }
+/>
+
+#### Custom Gradient Colors
+
+Customize gradient colors per series using the `gradient` option in series data:
+
+<Canvas of={ LineChartStories.GradientCustomColors } />
+
+<Source
+	language="jsx"
+	code={ `const data = [
+		{
+			label: 'Revenue',
+			data: chartData,
+			options: {
+				gradient: {
+					from: '#4CAF50',
+					to: '#81C784',
+					fromOpacity: 0.8,
+					toOpacity: 0.1,
+				},
+			},
+		},
+		{
+			label: 'Expenses',
+			data: expenseData,
+			options: {
+				gradient: {
+					from: '#F44336',
+					to: '#EF5350',
+					fromOpacity: 0.6,
+					toOpacity: 0.0,
+				},
+			},
+		},
+	];
+
+	<LineChart
+		data={data}
+		withGradientFill={true}
+	/>` }
+/>
+
+#### Gradient with sections
+
+Create gradients that fade to transparent at specific points using stops, useful for highlighting data ranges. When no color is specified, the gradient uses the line color automatically:
+
+<Canvas of={ LineChartStories.GradientTransparent } />
+
+<Source
+	language="jsx"
+	code={ `const data = [
+		{
+			label: 'Temperature',
+			data: temperatureData,
+			options: {
+				gradient: {
+					stops: [
+						{ offset: '0%', opacity: 0.7 }, // Uses line color
+						{ offset: '20%', opacity: 0 },  // Fades to transparent
+						{ offset: '100%', opacity: 0 },
+					],
+				},
+			},
+		},
+	];
+
+	<LineChart
+		data={data}
+		withGradientFill={true}
+	/>` }
+/>
+
+#### Gradient Options
+
+The `gradient` option in series data supports the following properties:
+
+- **`from`**: Start color (hex, rgb, CSS variable)
+- **`to`**: End color (used when no stops are defined)
+- **`fromOpacity`**: Start opacity (0-1, default: 0.4)
+- **`toOpacity`**: End opacity (0-1, default: 0.1)
+- **`stops`**: Array of gradient stops for complex gradients
+
+#### Gradient Stop Properties
+
+Each stop in the `stops` array accepts:
+
+- **`offset`**: Position along gradient (percentage string, e.g., '25%')
+- **`color`**: Color at this stop (hex, rgb, CSS variable) - defaults to line color if omitted
+- **`opacity`**: Opacity at this stop (0-1, default: 1)
+
+**Note**: When using `stops`, the `from`, `to`, `fromOpacity`, and `toOpacity` properties are ignored.
+
+### Glyphs and Markers
+
+Add visual markers at data points using the glyph system:
+
+<Canvas of={ GlyphStories.Start } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		withStartGlyphs={true}
+		withLegendGlyph={true}
+		renderGlyph={(props) => (
+			<circle
+				cx={props.x}
+				cy={props.y}
+				r={4}
+				fill={props.color}
+			/>
+		)}
+	/>` }
+/>
+
+### Hiding Axes and Grid
+
+For minimal chart displays like sparklines or inline visualizations, you can hide the axes and grid using the `options` prop and `gridVisibility`. To do this only while the chart is short, use [`compactWhenShort`](#compact-when-short) instead.
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+	data={data}
+	gridVisibility="none"
+	options={{
+		axis: {
+			x: { display: false },
+			y: { display: false }
+		}
+	}}
+	showLegend={false}
+	withTooltips={false}
+	withGradientFill={true}
+	curveType="monotone"
+/>` }
+/>
+
+## Data Formats
+
+### Date Handling
+
+The chart supports multiple date formats and automatically converts to local timezone:
+
+<Canvas of={ LineChartStories.DateStringFormats } />
+
+<Source
+	language="jsx"
+	code={ `// Date objects
+	{ date: new Date('2024-01-01'), value: 10 }
+
+	// Date strings (automatically parsed)
+	{ dateString: '2024-01-01', value: 10 }
+	{ dateString: '2024-01-01 14:30:00', value: 15 }
+	{ dateString: '2024-01-01T14:30:00Z', value: 20 }` }
+/>
+
+### Large Values
+
+Automatic formatting handles large numbers with smart abbreviations:
+
+<Canvas of={ LineChartStories.SmartFormatting } />
+
+Values are automatically formatted as:
+- **1B and above**: "1.23B"
+- **1M and above**: "1.2M"
+- **1K and above**: "1k"
+- **Below 1K**: "1,234"
+
+### Buckets With No Data
+
+Set a point's `value` to `null` when its bucket has no reading, such as the days before a site launched. The bucket keeps its place on the axis, so the chart still spans the full range, but the line and its gradient fill break at that point instead of connecting across it, and its tooltip reads "No data" rather than 0. The start and end glyphs land on the first and last bucket that has a reading, skipping any null buckets at either end. Pointer handlers and drag-to-zoom still reach a null bucket, and `onPointerDown` / `onPointerUp` receive its datum with a `null` value. If no visible series has a reading, the y axis falls back to a `[0, 1]` range (`[1, 10]` on a log scale). If every reading has the same value, as when a flat count follows the null buckets, a linear y axis runs from 0 to that value, so the line sits at the top of the plot as its bars would. Both fallbacks yield to `options.yScale.domain`, and to an axis pinned with `rescaleYOnVisibilityChange={ false }` when the data across all series has a range. Use `0` only for a real reading of zero: in the example below April is a real zero, so the line starts there, at 0, while the months before it have nothing.
+
+<Canvas of={ LineChartStories.BucketsWithNoData } />
+
+## Error Handling
+
+The chart gracefully handles various error states and edge cases:
+
+<Canvas of={ LineChartStories.ErrorStates } />
+
+**Supported scenarios:**
+- Empty data arrays
+- Invalid date values
+- NaN numeric values
+- Buckets with no reading (null), which break the line instead of being rejected
+- Single data points
+- Missing data properties
+
+## Annotations
+
+Add contextual information to highlight specific data points or events. For comprehensive annotation documentation, see the [Line Chart Annotations](?path=/docs/js-packages-charts-library-charts-line-chart-annotations--docs) guide. For detailed annotation API reference, see the [Line Chart API Reference](./?path=/docs/js-packages-charts-library-charts-line-chart-api-reference--docs):
+
+<Source
+	language="jsx"
+	code={ `<LineChart data={data}>
+		<LineChart.AnnotationsOverlay>
+			<LineChart.Annotation
+				datum={{ date: new Date('2024-01-15'), value: 100 }}
+				title="Product Launch"
+				subtitle="Version 2.0 released"
+				subjectType="line-vertical"
+			/>
+		</LineChart.AnnotationsOverlay>
+	</LineChart>` }
+/>
+
+**Note**: Annotation popovers use the native Popover API. Due to Safari's `foreignObject` positioning limitations, interactive popovers are positioned in the viewport center rather than next to the annotation.
+
+## Interactive Features
+
+### Tooltips and Crosshairs
+
+Enable rich interactive tooltips with optional crosshair guides:
+
+The built-in tooltip names the bucket at its own granularity, down to the hour on
+hourly data. A custom `renderTooltip` is handed the same classification as
+`bucketInfo`, so it can label the bucket the way the chart's own axis does. See
+[Date Bucket Classification](?path=/docs/js-packages-charts-library-global-context--docs).
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		withTooltips={true}
+		withTooltipCrosshairs={{
+			showVertical: true,
+			showHorizontal: false
+		}}
+		renderTooltip={({ datum, color }) => (
+			<div style={{ background: color, color: 'white', padding: '8px' }}>
+				<div>Value: {datum.value}</div>
+				<div>Date: {datum.date.toLocaleDateString()}</div>
+			</div>
+		)}
+	/>` }
+/>
+
+Tooltips render inside the chart's own wrapper, not in a `document.body` portal, so they stack with the page like any other element and a sticky or fixed header paints over them. `detectBounds` flips the box to the side of the anchor that overflows less, measured against both the wrapper and the nearest ancestor that clips its overflow (`overflow: hidden`, `clip`, `auto` or `scroll`), so it stays inside the chart whenever it fits there; then it clamps the box inside that ancestor, or inside the viewport when nothing clips. A box larger than the wrapper may reach past it into that ancestor, where siblings later in the DOM can paint over it. Only an ancestor smaller than the box itself can still cut it off.
+
+### Below-Axis Tooltips
+
+Set `tooltipPlacement="below-axis"` to place the panel below the bottom x-axis label band with its pointer touching the bottom of that band at the active datum's x coordinate. The panel centers on the datum and clamps horizontally at the nearest clipping ancestor or viewport edge. The band ends at the plot bottom plus the bottom margin. The panel stays below the band even when there is insufficient vertical space; an ancestor that clips overflow can still cut it off. The default `"auto"` placement keeps the existing flipping and clamping behavior.
+
+<Canvas of={ TooltipStories.BelowAxisDefaultRenderer } />
+
+<Source
+	language="tsx"
+	code={ `import { LineChart } from '@automattic/charts';
+
+	<LineChart
+		data={ data }
+		tooltipPlacement="below-axis"
+		withTooltipCrosshairs={ {
+			showVertical: true,
+			verticalStyle: { strokeWidth: 40, strokeOpacity: 0.12 },
+		} }
+	/>` }
+/>
+
+To recolor one chart's tooltip, repoint `--a8c-charts-color-surface` and `--a8c-charts-color-label` in `tooltipStyle`; to recolor every tooltip, set `--a8c-charts-color-tooltip-surface`. The default content paints nothing of its own, so it follows the box, and the below-axis pointer inherits the box background. Other `tooltipStyle` properties, such as `boxShadow`, apply to the box directly. Choose colors with sufficient contrast. A custom `renderTooltip` keeps control of its own content styles: content that sets its own text color or background draws it on the dark box, so let it inherit instead.
+
+`XYChartTooltip` is the tooltip LineChart renders, exported for a custom visx `XYChart`. Its `style` prop overrides the tooltip surface. Use its `unstyled` prop to strip the box styles.
+
+Use `withTooltipCrosshairs.verticalStyle` to turn the vertical guide into a broad translucent highlight, as shown above. Both `verticalStyle` and `horizontalStyle` accept paint properties (`stroke`, `strokeWidth`, `strokeOpacity`, `strokeDasharray`, `strokeLinecap`, and `opacity`), `className`, and a `style` object limited to those paint properties; their corresponding `showVertical` or `showHorizontal` option enables the guide.
+
+Leave space below the chart when it sits inside a clipping container. Below-axis placement supports the same keyboard controls, screen reader announcements, and custom `renderTooltip` content as automatic placement.
+
+### Pointer Events
+
+Handle user interactions with custom event handlers:
+
+<Canvas of={ LineChartStories.WithPointerEvents } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		onPointerDown={({ datum }) => console.log('Clicked:', datum)}
+		onPointerMove={({ datum }) => console.log('Hover:', datum)}
+	/>` }
+/>
+
+### Zooming
+
+Set `zoomable` to let users drag horizontally across the plot to zoom the X axis into that range:
+
+<Canvas of={ LineChartStories.Zoomable } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		zoomable={true}
+	/>` }
+/>
+
+Zoom behavior:
+
+- Disabled by default (`zoomable={false}`).
+- Only the X axis rescales; the Y axis is unaffected.
+- A selection rectangle follows the pointer while dragging.
+- Drags shorter than 6px are ignored, so a click never zooms.
+- While zoomed, a "Reset zoom" button appears in the top-right to restore the full domain. It is reachable with Tab and activates with Enter or Space. A "Reset zoom" tooltip shows on hover and on keyboard focus, and Escape dismisses it.
+- Series are clipped to the plot area while zoomed, so lines never overflow the axes.
+- `zoomable` chains with your own `onPointerDown`/`onPointerMove`/`onPointerUp` handlers rather than replacing them.
+
+### Keyboard Navigation
+
+Charts are fully keyboard accessible with Tab navigation and arrow key data point selection.
+
+When zoomed, the reset button is reachable with Tab and activates with Enter or Space.
+
+## Legends
+
+Use the composition API to add a legend by placing `<LineChart.Legend />` as a child:
+
+<Canvas of={ LineChartStories.WithCompositionLegend } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart data={data}>
+		<LineChart.Legend />
+	</LineChart>` }
+/>
+
+For full legend configuration options — positioning, orientation, shapes, interactivity, and the composition API — see the [Legend component docs](./?path=/docs/js-packages-charts-library-components-legend--docs).
+
+Use `defaultHiddenSeries` to hide selected series initially while keeping them available through an interactive legend. The first defined list is used; later values for the same `chartId` are ignored. The defaults are seeded once per `chartId`, so a series the reader reveals stays revealed even if the chart unmounts and comes back — swapping between chart types, or a tab the chart lives in going away and returning. Only a new `chartId` seeds again.
+
+<Canvas of={ LineChartStories.WithDefaultHiddenSeries } />
+
+## Theming Integration
+
+Line Charts integrate seamlessly with the chart theming system. The default theme has neutral styling, and is automatically applied to all charts unless a custom theme is provided.
+
+**Series colors come from the palette custom properties, not the theme object.** Set as many of the five slots as you need; an unset slot is skipped, and charts generates accessible colors beyond whatever you set:
+
+<Source
+	language="css"
+	code={ `.a8c-charts-scope {
+		--a8c-charts-color-series-1: #FF6B6B;
+		--a8c-charts-color-series-2: #4ECDC4;
+		--a8c-charts-color-series-3: #45B7D1;
+	}` }
+/>
+
+For other catalog colors and their scoping rules, see [the token catalog](?path=/docs/js-packages-charts-library-providers-globalchartsprovider--docs). For local tooltip colors, see [Below-Axis Tooltips](#below-axis-tooltips).
+
+<Source
+	language="css"
+	code={ `.my-dashboard {
+		--a8c-charts-color-grid: #E0E0E0;
+	}` }
+/>
+
+## Responsive Behavior
+
+By default, charts **fill their parent container's dimensions**. The parent must have an explicit height:
+
+<Source
+	language="jsx"
+	code={ `// Fill parent container (default) - parent needs explicit height
+	<div style={{ width: '100%', height: '400px' }}>
+		<LineChart data={data} />
+	</div>
+
+	// Use aspect ratio - height from width, contained if the parent is shorter
+	<div style={{ width: '100%' }}>
+		<LineChart data={data} aspectRatio={0.5} />
+	</div>
+
+	// Fixed dimensions
+	<LineChart data={data} width={800} height={400} />` }
+/>
+
+For more details on responsive behavior, see the [Responsive Design section](./?path=/docs/js-packages-charts-library-introduction--docs#responsive-design) in the introduction.
+
+### Compact When Short
+
+Set `compactWhenShort` to drop the axes, grid and legend while the chart is shorter than `theme.compactWhenShort.below` (140px by default). Only the lines remain, and they keep their tooltips and keyboard navigation. The chart compares the height it was given, legend included, so hiding the legend never flips it back. Series hidden through the legend stay hidden until the chart is tall enough to show the legend again.
+
+<Canvas of={ LineChartStories.CompactWhenShort } />
+
+In compact mode the margin defaults to `theme.compactWhenShort.margin`, and any side you pass through `margin` still wins. To change the threshold, set it on the theme:
+
+<Source
+	language="jsx"
+	code={ `// Applies to every chart under this provider
+	<GlobalChartsProvider theme={ { compactWhenShort: { below: 180 } } }>
+		<LineChart data={ data } compactWhenShort />
+	</GlobalChartsProvider>` }
+/>
+
+## Animation
+
+The Line Chart component supports an optional entry animation that creates a smooth reveal effect when the chart first renders:
+
+<Canvas of={ LineChartStories.Animation } />
+
+<Source
+	language="tsx"
+	code={ `<LineChart
+		data={ data }
+		width={ 800 }
+		height={ 400 }
+		animation={ true }
+	/>` }
+/>
+
+### Animation Behavior
+
+- **Opt-in**: Animation is disabled by default and must be explicitly enabled with the `animation` prop
+- **Accessibility**: Automatically respects the user's `prefers-reduced-motion` system setting - animation will not play for users who prefer reduced motion
+- **Effect**: Creates a rising effect where lines scale up from the bottom, revealing the data progressively
+- **Duration**: 1000ms (1 second) with ease-out timing
+
+**Note**: The animation plays once when the chart initially renders and does not repeat.
+
+## Advanced Customization
+
+### Axis Configuration
+
+Customize axes with formatting, orientation, and tick options:
+
+<Canvas of={ LineChartStories.SmartFormatting } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		options={{
+			axis: {
+				x: {
+					orientation: 'bottom',
+					numTicks: 6,
+					tickFormat: (date) => date.toLocaleDateString()
+				},
+				y: {
+					orientation: 'right',
+					numTicks: 4,
+					tickFormat: (value) => '$' + value + 'k'
+				}
+			},
+			yScale: {
+				type: 'linear',
+				zero: true,
+				nice: true
+			}
+		}}
+	/>` }
+/>
+
+When every visible value is a whole number, the value axis places ticks only on whole numbers, instead of repeating a rounded label at fractional steps. Pass `options.axis.y.tickValues` to choose the ticks yourself. A y domain you pin with `options.yScale.domain` keeps every tick, so a percentage axis on `[ 0, 1 ]` still steps by 20%.
+
+<Canvas of={ LineChartStories.SmallWholeNumberRange } />
+
+When values carry decimals the labels round away, pass `options.axis.y.tickDecimals` with the decimals the labels show, such as `0` for whole dollars, and ticks land only where a label can be told apart. When fewer than two steps fall inside the values' range, the axis widens to the nearest steps, so at least two ticks show. A pinned value domain, `tickValues` or a log scale turns the option off.
+
+<Canvas of={ LineChartStories.TickDecimals } />
+
+### Value Axis Baseline
+
+By default the value axis fits the data, which makes a small change look large. Pass `yScale: { zero: true }` to start the axis at zero; the axis top is then rounded from zero rather than from the data's floor, so the line does not run into the top edge. The axis still rescales when a series is hidden through the legend. A log scale cannot hold zero, so it ignores the option.
+
+<Canvas of={ LineChartStories.ZeroBaseline } />
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		options={{
+			yScale: { zero: true }
+		}}
+	/>` }
+/>
+
+### Custom Margins
+
+Control chart layout with precise margin settings:
+
+<Source
+	language="jsx"
+	code={ `<LineChart
+		data={data}
+		margin={{
+			top: 20,
+			right: 80,
+			bottom: 60,
+			left: 80
+		}}
+	/>` }
+/>
+
+## Accessibility
+
+### Keyboard Navigation
+
+- **Tab**: Focus the chart or legend items (if interactive legends are enabled)
+- **Arrow Keys**: Navigate between data points
+- **Enter/Space**: Activate tooltips or toggle legend items (if interactive legends are enabled)
+- **Escape**: Close a keyboard-opened tooltip and return focus to the chart
+
+### Screen Reader Support
+
+- Chart container has `role="application"`, so screen readers pass arrow keys through to the chart's point navigation.
+- Set `ariaLabel` to name the chart. See [Accessible names](./?path=/docs/js-packages-charts-library-introduction--docs#accessible-names).
+- Data points are navigable and announced with values
+- Interactive elements have appropriate ARIA attributes
+- Interactive legend items announce their current visibility state ("visible" or "hidden")
+- Color information is supplemented with patterns and labels
+
+### Focus Management
+
+- Clear visual focus indicators
+- Logical tab order through interactive elements
+- Tooltip focus restoration follows the keyboard navigation behavior above

@@ -1,0 +1,8 @@
+{
+	"private": true,
+	"name": "@automattic/jetpack-premium-analytics-video-detail-route",
+	"route": {
+		"path": "/video/$videoId",
+		"page": "jetpack-premium-analytics"
+	}
+}

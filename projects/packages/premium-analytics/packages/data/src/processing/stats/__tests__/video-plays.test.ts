@@ -1,0 +1,146 @@
+import { mergeStatsVideoPlaysComparisonRows, sanitizeStatsVideoPlaysResponse } from '..';
+import {
+	videoPlaysCompleteStatsSummaryFixture,
+	videoPlaysFixture,
+} from '../__fixtures__/video-plays';
+import type { StatsNormalizedReport, StatsVideoPlaysItem } from '..';
+
+describe( 'Stats video plays normalizer', () => {
+	it( 'normalizes video plays with the default plays shape', () => {
+		expect(
+			sanitizeStatsVideoPlaysResponse( videoPlaysFixture, {
+				period: 'day',
+				end_date: '2026-06-16',
+			} ).data[ 0 ].items[ 0 ]
+		).toEqual(
+			expect.objectContaining( {
+				id: 12,
+				label: 'Launch video',
+				plays: 11,
+				link: 'https://example.com/video/',
+				actions: [ { type: 'link', data: 'https://example.com/video/' } ],
+			} )
+		);
+	} );
+
+	it( 'normalizes summarized video plays into range data', () => {
+		const result = sanitizeStatsVideoPlaysResponse( videoPlaysCompleteStatsSummaryFixture, {
+			period: 'day',
+			start_date: '2026-07-09',
+			end_date: '2026-07-14',
+			summarize: true,
+			complete_stats: true,
+		} );
+
+		expect( result.summary ).toEqual(
+			expect.objectContaining( {
+				total: {
+					impressions: '584',
+					views: '337',
+					watch_time: '0.186',
+				},
+			} )
+		);
+		expect( result.data[ 0 ].items[ 0 ] ).toEqual( {
+			id: 454,
+			label: 'Product tour',
+			plays: 106,
+			impressions: 183,
+			watch_time: 0.0597,
+			retention_rate: 67.6,
+			link: null,
+			actions: [],
+			children: null,
+		} );
+	} );
+
+	it( 'keeps a complete-stats row poster and drops an empty one', () => {
+		const response = ( poster: unknown ) => ( {
+			date: '2026-06-22',
+			period: 'day',
+			days: {
+				'2026-06-22': { data: [ { post_id: 12, title: 'Launch video', views: 3, poster } ] },
+			},
+		} );
+		const query = { period: 'day', end_date: '2026-06-22', complete_stats: true } as const;
+
+		expect(
+			sanitizeStatsVideoPlaysResponse( response( 'https://i0.wp.com/v/launch.jpg' ), query )
+				.data[ 0 ].items[ 0 ].poster
+		).toBe( 'https://i0.wp.com/v/launch.jpg' );
+		for ( const poster of [ null, '' ] ) {
+			expect(
+				sanitizeStatsVideoPlaysResponse( response( poster ), query ).data[ 0 ].items[ 0 ]
+			).not.toHaveProperty( 'poster' );
+		}
+	} );
+
+	it( 'keeps an unknown retention rate as null instead of a measured zero', () => {
+		const response = {
+			date: '2026-06-22',
+			period: 'day',
+			days: {
+				'2026-06-22': {
+					data: [ { post_id: 12, title: 'Launch video', views: 3, retention_rate: null } ],
+				},
+			},
+		};
+
+		expect(
+			sanitizeStatsVideoPlaysResponse( response, {
+				period: 'day',
+				end_date: '2026-06-22',
+				complete_stats: true,
+			} ).data[ 0 ].items[ 0 ].retention_rate
+		).toBeNull();
+	} );
+} );
+
+describe( 'mergeStatsVideoPlaysComparisonRows', () => {
+	const makeVideo = ( overrides: Partial< StatsVideoPlaysItem > ): StatsVideoPlaysItem => ( {
+		label: '',
+		plays: 0,
+		impressions: 0,
+		watch_time: 0,
+		retention_rate: 0,
+		link: null,
+		children: null,
+		...overrides,
+	} );
+
+	const makeReport = (
+		items: StatsVideoPlaysItem[]
+	): StatsNormalizedReport< StatsVideoPlaysItem > => ( {
+		summary: {},
+		data: [
+			{
+				time_interval: '2026-06-22',
+				date_start: '2026-06-22 00:00:00',
+				date_end: '2026-06-22 23:59:59',
+				items,
+			},
+		],
+	} );
+
+	it( 'does not match unrelated rows that lack any stable identifier', () => {
+		const { rows, hasComparison } = mergeStatsVideoPlaysComparisonRows(
+			makeReport( [ makeVideo( { plays: 10 } ) ] ),
+			makeReport( [ makeVideo( { plays: 4 } ) ] )
+		);
+
+		expect( rows[ 0 ].previousPlays ).toBeUndefined();
+		expect( rows[ 0 ].previousImpressions ).toBeUndefined();
+		expect( hasComparison ).toBe( false );
+	} );
+
+	it( 'matches plays and impressions by video id when present', () => {
+		const { rows, hasComparison } = mergeStatsVideoPlaysComparisonRows(
+			makeReport( [ makeVideo( { id: 12, label: 'Launch video', plays: 10, impressions: 20 } ) ] ),
+			makeReport( [ makeVideo( { id: 12, label: 'Launch video', plays: 4, impressions: 8 } ) ] )
+		);
+
+		expect( rows[ 0 ].previousPlays ).toBe( 4 );
+		expect( rows[ 0 ].previousImpressions ).toBe( 8 );
+		expect( hasComparison ).toBe( true );
+	} );
+} );

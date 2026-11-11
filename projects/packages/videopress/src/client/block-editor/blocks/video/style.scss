@@ -1,0 +1,45 @@
+@use "@wordpress/base-styles/mixins";
+
+.wp-block-jetpack-videopress {
+	position: relative;
+
+	&.jetpack-videopress-player.alignright ~ &.jetpack-videopress-player,
+	&.jetpack-videopress-player.alignleft ~ &.jetpack-videopress-player {
+		clear: both;
+	}
+
+	figcaption {
+		margin-bottom: 1em;
+		margin-top: 0.5em;
+
+		@include mixins.caption-style-theme();
+	}
+
+	.jetpack-videopress-player__wrapper {
+		position: relative;
+		line-height: 0;
+	}
+
+	.jetpack-videopress-player__overlay {
+		cursor: pointer;
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 1;
+		transition: opacity 300ms ease-in-out;
+
+		&:hover {
+			opacity: 0;
+		}
+	}
+
+	&.wp-block-jetpack-videopress--has-max-width {
+		margin: auto;
+	}
+}
+
+.is-layout-flex .wp-block-jetpack-videopress.wp-block-jetpack-videopress--has-max-width {
+	margin: 0;
+}

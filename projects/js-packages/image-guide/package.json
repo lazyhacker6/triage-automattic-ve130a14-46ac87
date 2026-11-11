@@ -1,0 +1,61 @@
+{
+	"name": "@automattic/jetpack-image-guide",
+	"version": "2.0.0",
+	"description": "Go through the dom to analyze image size on screen vs actual file size.",
+	"homepage": "https://github.com/Automattic/jetpack/tree/HEAD/projects/js-packages/image-guide/#readme",
+	"bugs": {
+		"url": "https://github.com/Automattic/jetpack/labels/[JS Package] Image Guide"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Automattic/jetpack-image-guide.git"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Automattic",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./build/index.d.ts",
+			"default": "./build/index.js"
+		}
+	},
+	"main": "./src/index.ts",
+	"scripts": {
+		"build": "pnpm run clear-dist && webpack && tsgo --emitDeclarationOnly",
+		"build-development": "pnpm run build",
+		"build-production": "NODE_ENV=production BABEL_ENV=production pnpm run build",
+		"clear-dist": "rm -rf build/",
+		"dev": "pnpm run clear-dist && concurrently 'pnpm:dev-validate-ts' 'pnpm:dev-compile'",
+		"dev-compile": "webpack --watch",
+		"dev-validate-ts": "tsgo --watch --pretty --strict false # Note: Disable Strict mode to avoid noisy development, while keeping strict errors visible in IDEs.",
+		"test": "NODE_OPTIONS=--experimental-vm-modules jest --config=tests/jest.config.cjs",
+		"test-coverage": "pnpm run test --coverage",
+		"typecheck": "tsgo --noEmit",
+		"validate-ts": "tsgo --pretty --strict false",
+		"watch": "pnpm run dev"
+	},
+	"dependencies": {
+		"@wordpress/data": "11.1.0"
+	},
+	"peerDependencies": {
+		"react": "^18.0.0 || ^19.0.0",
+		"react-dom": "^18.0.0 || ^19.0.0"
+	},
+	"devDependencies": {
+		"@automattic/jetpack-webpack-config": "workspace:*",
+		"@babel/core": "^7.0.0",
+		"@babel/preset-env": "7.29.7",
+		"@babel/preset-typescript": "7.29.7",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"@typescript/native-preview": "7.0.0-dev.20260707.2",
+		"concurrently": "10.0.5",
+		"jest": "30.5.2",
+		"react": "19.3.0",
+		"react-dom": "19.3.0",
+		"sass-embedded": "1.97.3",
+		"sass-loader": "16.0.5",
+		"webpack": "5.112.2",
+		"webpack-cli": "7.2.1"
+	}
+}

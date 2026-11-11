@@ -1,0 +1,52 @@
+/**
+ * Mock Data for Storybook
+ *
+ * This folder contains mock API responses for widget testing.
+ * Each file should export typed mock data matching the API response format.
+ *
+ * ## Adding New Mocks
+ *
+ * 1. Create a new file: `{endpoint-name}.ts`
+ * 2. Import the response type from `@jetpack-premium-analytics/data`
+ * 3. Export typed mock data
+ * 4. Add export here and import in `../register-report-mocks.ts`
+ */
+
+export { seededRandom } from './seeded-random';
+export { mockCommentsData } from './comments';
+export { mockSearchTermsData, mockSearchTermsComparisonData } from './search-terms';
+
+export { buildPostContentResponse } from './post-content';
+export { mockSingleVideoData } from './single-video';
+export { mockTagsData } from './tags';
+export {
+	buildAuthorStatsData,
+	MOCK_AUTHOR_FIRST_CONTENT_DAY,
+	mockTopAuthorsData,
+	mockTopAuthorsComparisonData,
+} from './top-authors';
+
+export { mockSiteSummary } from './site-summary';
+
+export { mockStatsInsightsData } from './insights';
+
+export { mockStatsPostData } from './stats-post';
+
+export { mockPostLikesData } from './post-likes';
+export { mockPostCommentsData } from './post-comments';
+
+export { mockStatsSummaryData, mockStatsSummaryComparisonData } from './summary';
+
+export { MOCK_PAID_SUBSCRIBERS, buildStatsSubscribersCountsData } from './subscriber-counts';
+
+export { buildEmailRateResponse } from './email-rate';
+
+export { buildEmailTimelineResponse } from './email-timeline';
+
+export {
+	mockEmailCountryBreakdown,
+	mockEmailDeviceBreakdown,
+	mockEmailClientBreakdown,
+	mockEmailInternalLinkBreakdown,
+	mockEmailUserContentLinkBreakdown,
+} from './email-breakdown';

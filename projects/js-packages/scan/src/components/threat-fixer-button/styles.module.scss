@@ -1,0 +1,14 @@
+.support-link {
+	color: inherit;
+
+	&:focus,
+	&:hover {
+		color: inherit;
+		box-shadow: none;
+	}
+}
+
+.tooltip {
+	max-width: 240px;
+	text-align: left;
+}

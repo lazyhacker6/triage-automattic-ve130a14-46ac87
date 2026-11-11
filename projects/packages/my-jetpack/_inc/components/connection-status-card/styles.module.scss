@@ -1,0 +1,130 @@
+.connection-status-card {
+
+	h3 {
+		font-size: 1rem;
+		line-height: 20px;
+		font-weight: 500;
+		margin-top: 0;
+		margin-bottom: 1rem;
+	}
+
+	.info {
+		transform: rotate(180deg);
+	}
+
+	.list-item {
+		display: flex;
+		align-items: center;
+		gap: var(--spacing-base);
+		margin-bottom: var(--spacing-base);
+
+		&-text {
+			display: flex;
+			gap: var(--spacing-base);
+
+			&.error {
+				color: var(--jp-red);
+				fill: var(--jp-red);
+			}
+
+			&.warning {
+				color: var(--jp-yellow-50);
+				fill: var(--jp-yellow-50);
+			}
+
+			&.success {
+
+				svg {
+					color: var(--jp-green-50);
+				}
+			}
+		}
+	}
+}
+
+.connection-state {
+
+	h4 {
+		margin-top: 0;
+		margin-bottom: 0.25rem;
+		// Lays the fault icon beside the label. Not `Stack render={ <h4 /> }`: that
+		// puts `display: flex` in `@layer wp-ui`, which wp-admin's unlayered rules
+		// beat, leaving the icon inline and sitting on the text baseline.
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 1.25rem;
+		line-height: 24px;
+		font-weight: 500;
+		color: var(--jp-black);
+
+		:global(button.components-button) {
+			height: auto;
+			padding: 0;
+			font-size: 1.25rem;
+			line-height: 24px;
+			font-weight: 500;
+			display: flex;
+			align-items: center;
+			gap: 0.25rem;
+			color: var(--jp-black);
+
+			&:hover:not(:disabled) {
+				color: var(--jp-black);
+				text-decoration: underline;
+				background: transparent;
+			}
+
+			&:focus:not(:disabled),
+			&:active:not(:disabled) {
+				color: var(--jp-black);
+				outline: none;
+				box-shadow: none;
+			}
+		}
+	}
+
+	// The icon paints itself with `currentColor`, so the severity is set as a text
+	// colour rather than a fill.
+	.state-icon {
+
+		&.error {
+			color: var(--jp-red);
+		}
+
+		&.warning {
+			color: var(--jp-yellow-50);
+		}
+	}
+
+	// Size and spacing are the description's own, from `@wordpress/ui`; only the
+	// colour is the card's, since `Text` sets none.
+	.details {
+		color: var(--jp-gray-70);
+
+		// The Site Health and support links come from the connection package, whose
+		// `Link` never declares `text-decoration` — it leans on the browser default,
+		// which wp-admin unsets. Unlayered, so this beats `@layer wp-ui`.
+		a {
+			text-decoration: underline;
+		}
+	}
+
+	.description {
+		display: flex;
+		font-size: 0.8125rem; // 13px
+		line-height: 20px;
+		font-weight: 400;
+		color: var(--jp-gray-40);
+		margin-bottom: 0.5rem;
+	}
+}
+
+
+:global(.account-error-tooltip) {
+	color: var(--jp-yellow-50) !important;
+
+	svg {
+		color: var(--jp-yellow-50) !important;
+	}
+}

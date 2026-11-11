@@ -1,0 +1,59 @@
+/**
+ * External dependencies
+ */
+import { useMemo } from 'react';
+import type { ChartTheme } from '@jetpack-premium-analytics/externals';
+/**
+ * Internal dependencies
+ */
+// The dashboard's chart colors, leaderboard spacing and bar radius. They are set in CSS, not on the theme below.
+import './chart-roles.scss';
+
+export function useChartTheme(): ChartTheme {
+	return useMemo( () => {
+		return {
+			gridStyles: {
+				strokeWidth: 1,
+			},
+			tickLength: 4,
+			// `fontSize` is load-bearing: it must stay a plain number, since resolveFontSize()
+			// rejects var() — without it visx falls back to 11 and margin/pie-label sizing break.
+			svgLabelSmall: {
+				fontSize: 12,
+			},
+			xAxisLineStyles: {
+				strokeWidth: 1,
+			},
+			legend: {
+				labelStyles: {
+					fontSize: 'var(--wpds-typography-font-size-sm)',
+					fontWeight: 400,
+				},
+			},
+			leaderboardChart: {
+				labelSpacing: 'xs',
+			},
+			// The chart's 24px default does not fit twelve month blocks in a full-width card.
+			heatmapChart: {
+				groupGap: 16,
+			},
+			lineChart: {
+				lineStyles: {
+					comparison: {
+						strokeDasharray: '4 4',
+						strokeWidth: 1.5,
+						strokeLinecap: 'square' as const,
+						strokeOpacity: 0.8,
+						strokeDashoffset: 2,
+					},
+				},
+			},
+			// Comparison lines are styled by `lineChart.lineStyles.comparison`, never by index.
+			seriesLineStyles: [
+				{
+					strokeWidth: 2,
+				},
+			],
+		};
+	}, [] );
+}

@@ -1,0 +1,134 @@
+<?php
+
+namespace Automattic\Jetpack_Boost\Modules\Optimizations\Lcp;
+
+use Automattic\Jetpack\Boost_Core\Lib\Boost_API;
+use Automattic\Jetpack_Boost\Lib\Cornerstone\Cornerstone_Utils;
+
+class LCP_Analyzer {
+	/** @var LCP_State */
+	private $state;
+
+	/** @var LCP_Storage */
+	private $storage;
+
+	/**
+	 * @since 4.0.0
+	 */
+	public function __construct() {
+		$this->state   = new LCP_State();
+		$this->storage = new LCP_Storage();
+	}
+
+	/**
+	 * Start the LCP analysis process
+	 *
+	 * @return array The current state data
+	 */
+	public function start() {
+		// Get cornerstone pages to analyze
+		$pages = $this->get_cornerstone_pages();
+
+		// Store those pages in the LCP State
+		$this->state
+			->prepare_request()
+			->set_pages( $pages )
+			->set_pending_pages( $pages )
+			->save();
+
+		// Get the data
+		$data = $this->state->get();
+
+		// Start the analysis process
+		$this->analyze_pages( $pages );
+
+		// Clear previous LCP analysis data from storage
+		$this->storage->clear();
+
+		return $data;
+	}
+
+	/**
+	 * Start a partial analysis when the saved state has pages, marking only the given pages pending.
+	 * Otherwise return the state unchanged.
+	 *
+	 * @param array $pages The pages to analyze.
+	 * @return array The current state data
+	 */
+	public function start_partial_analysis( $pages ) {
+		$current_state = $this->state->get();
+		if ( empty( $current_state['pages'] ) ) {
+			return $current_state;
+		}
+
+		$this->state
+			->prepare_request()
+			->set_pages( $current_state['pages'] )
+			->set_pending_pages( $pages )
+			->save();
+
+		$response = $this->analyze_pages( $pages );
+
+		// No callback follows a refused request, so the pages would otherwise stay pending.
+		if ( is_wp_error( $response ) ) {
+			$this->state->set_error( $response->get_error_message() )->save();
+		}
+
+		// @todo - Clear previous LCP analysis data from storage for pages in the $pages array.
+		// We currently don't have a way to do this.
+
+		return $this->state->get();
+	}
+
+	/**
+	 * Get cornerstone pages for analysis
+	 *
+	 * @return array
+	 */
+	protected function get_cornerstone_pages() {
+		$pages                  = array();
+		$cornerstone_pages_list = Cornerstone_Utils::get_list();
+
+		foreach ( $cornerstone_pages_list as $url ) {
+			$pages[] = Cornerstone_Utils::prepare_provider_data( $url );
+		}
+
+		return $pages;
+	}
+
+	/**
+	 * Run analysis for the given pages
+	 *
+	 * @param array $pages Pages to analyze
+	 */
+	private function analyze_pages( $pages ) {
+		$payload = array(
+			'pages'     => $pages,
+			'requestId' => md5(
+				wp_json_encode(
+					$pages,
+					0 // phpcs:ignore Jetpack.Functions.JsonEncodeFlags.ZeroFound -- No `json_encode()` flags because this needs to match whatever is calculating the hash on the other end.
+				)
+			),
+		);
+		return Boost_API::post( 'lcp', $payload );
+	}
+
+	/**
+	 * Get the current state
+	 *
+	 * @return LCP_State
+	 */
+	public function get_state() {
+		return $this->state;
+	}
+
+	/**
+	 * Get the storage instance
+	 *
+	 * @return LCP_Storage
+	 */
+	public function get_storage() {
+		return $this->storage;
+	}
+}

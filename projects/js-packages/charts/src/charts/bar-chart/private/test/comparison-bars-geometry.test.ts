@@ -1,0 +1,39 @@
+import { computeSlotRect, getValueScaleBaseline } from '../comparison-bars-geometry';
+
+describe( 'getValueScaleBaseline', () => {
+	it( 'clamps to the bottom (range max) when 0 is below the domain (vertical, descending range)', () => {
+		// vertical linear scale: range [200, 0] (bottom -> top), domain [10, 100] (zero excluded)
+		const scale = ( ( v: number ) => 200 - ( ( v - 10 ) / 90 ) * 200 ) as never;
+		( scale as { range: () => number[] } ).range = () => [ 200, 0 ];
+		// scale(0) = 200 - (-10/90)*200 ≈ 222 -> clamped to 200
+		expect( getValueScaleBaseline( scale ) ).toBe( 200 );
+	} );
+
+	it( 'preserves an out-of-range zero baseline for an ascending scale', () => {
+		// horizontal linear scale: range [0, 200], domain [-100, -10] (zero excluded)
+		const scale = ( ( v: number ) => ( ( v + 100 ) / 90 ) * 200 ) as never;
+		( scale as { range: () => number[] } ).range = () => [ 0, 200 ];
+		expect( getValueScaleBaseline( scale ) ).toBeCloseTo( 222.222222 );
+	} );
+} );
+
+describe( 'computeSlotRect', () => {
+	const base = {
+		bandPosition: 100,
+		slotOffset: 10,
+		slotThickness: 40,
+		widthFactor: 1.5,
+	};
+
+	it( 'centers a 150% wide shadow on the primary slot (vertical)', () => {
+		const r = computeSlotRect( { ...base, horizontal: false, valuePositions: [ 200, 50 ] } );
+		// slotStart=110, center=110+20=130, shadowThickness=60, shadowStart=130-30=100
+		expect( r ).toEqual( { x: 100, y: 50, width: 60, height: 150 } );
+	} );
+
+	it( 'centers a 150% tall shadow on the primary slot (horizontal)', () => {
+		const r = computeSlotRect( { ...base, horizontal: true, valuePositions: [ 0, 150 ] } );
+		// slotStart=110, center=130, shadowThickness=60, shadowStart=100
+		expect( r ).toEqual( { x: 0, y: 100, width: 150, height: 60 } );
+	} );
+} );

@@ -1,0 +1,371 @@
+#!/usr/bin/env php
+<?php
+/**
+ * A tool to generate a GitHub Actions matrix for the CI workflow.
+ *
+ * @package automattic/jetpack
+ */
+
+chdir( __DIR__ . '/../../' );
+
+// Default versions for PHP and Node.
+$versions = array();
+foreach ( file( '.github/versions.sh' ) as $line ) {
+	$line = trim( $line );
+	if ( '' === $line || '#' === $line[0] ) {
+		continue;
+	}
+	list( $k, $v )  = explode( '=', $line, 2 );
+	$versions[ $k ] = $v;
+}
+
+// Default matrix variables. See inline for docs.
+$default_matrix_vars = array(
+	// {string} Name for the job. Required, and must be unique.
+	'name'                => null,
+
+	// {string} Runner name as found in https://github.com/actions/runner-images/.
+	'runner'              => 'ubuntu-latest',
+
+	// {string} Composer script for the job. Required.
+	'script'              => null,
+
+	// {string} PHP version to use.
+	'php'                 => $versions['PHP_VERSION'],
+
+	// {string} Node version to use.
+	'node'                => $versions['NODE_VERSION'],
+
+	// {string} WordPress version to check out: 'latest', 'previous', 'trunk', or 'none'.
+	'wp'                  => 'none',
+
+	// {bool} Whether the check is experimental, i.e. it won't make the workflow fail. Don't set this when the job is required!
+	'experimental'        => false,
+
+	// {bool} Whether to force package tests to run. Normally they only run when 'wp' is 'latest' or 'none'.
+	'force-package-tests' => false,
+
+	// {int} Job timeout in minutes.
+	'timeout'             => 10,
+
+	// {string} A valid artifact name for any generated artifacts. If not given, will be derived from the name.
+	'artifact'            => null,
+
+	// (int|null) React version to test with.
+	'with-react-version'  => null,
+
+	// {bool} Whether to install WooCommerce.
+	'with-woocommerce'    => false,
+
+	// {bool} Whether this is a coverage run.
+	'coverage'            => false,
+
+	// {int|null} Which numbered split this job is, starting at 1, with each worker pinned to one CPU.
+	'split-num'           => null,
+
+	// {int|null} Total number of numbered splits, for `split-num`.
+	'split-total'         => null,
+
+	// {string[]|null} Groups to run under one worker with all CPUs.
+	'split-groups'        => null,
+
+	// {string[]} Project slugs a `split-num` job skips, as they have their own job.
+	'split-exclude'       => array(),
+);
+
+// Matrix definitions. Each will be combined with `$default_matrix_vars` later in processing.
+// Entries in `$to_split` are split into several jobs first, see "Split jobs" below.
+$matrix   = array();
+$to_split = array();
+
+// Add PHP tests.
+foreach ( array( '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5', '8.6' ) as $php ) {
+	$matrix[] = array(
+		'name'    => "PHP tests: PHP $php WP latest",
+		'script'  => 'test-php',
+		'php'     => $php,
+		'wp'      => 'latest',
+		'timeout' => 20, // 2025-11-06: Successful runs seem to take ~7 minutes.
+	);
+}
+
+foreach ( array( 'previous', 'trunk' ) as $wp ) {
+	$phpver   = $versions['PHP_VERSION'];
+	$matrix[] = array(
+		'name'    => "PHP tests: PHP {$phpver} WP $wp",
+		'script'  => 'test-php',
+		'php'     => $phpver,
+		'wp'      => $wp,
+		'timeout' => 15, // 2025-11-06: Successful runs seem to take ~7 minutes.
+	);
+}
+
+// Add WooCommerce tests.
+$matrix[] = array(
+	'name'             => 'PHP tests: PHP 7.4 WP latest with WooCommerce',
+	'script'           => 'test-php',
+	'php'              => '7.4',
+	'wp'               => 'latest',
+	'timeout'          => 15, // 2025-11-06: Successful runs seem to take ~3 minutes.
+	'with-woocommerce' => true,
+);
+
+// Add wpcomsh tests.
+$matrix[] = array(
+	'name'         => 'PHP tests: PHP 8.3 WP latest with wpcomsh',
+	'script'       => 'test-php',
+	'php'          => '8.3',
+	'wp'           => 'latest',
+	'timeout'      => 15, // 2025-11-06: Successful runs seem to take ~7 minutes.
+	'with-wpcomsh' => true,
+);
+
+// Add PHP coverage as a split job.
+$to_split[] = array(
+	'name'         => 'Code coverage (PHP, %s)',
+	'script'       => 'test-php-coverage',
+	'wp'           => 'latest',
+	'timeout'      => 30, // 2026-09-14: Runs are at around 15 minutes each.
+	'coverage'     => true,
+	'split_config' => array(
+		'groups'  => array( 'jetpack' => 'plugins/jetpack' ),
+		'generic' => 1,
+	),
+);
+
+// Add JS tests and coverage
+$js_split_config = array(
+	'groups'  => array(
+		'slow' => array( 'packages/premium-analytics', 'plugins/jetpack' ),
+	),
+	'generic' => 2,
+);
+foreach ( array( 'test-js', 'test-js-coverage' ) as $script ) {
+	$is_cov     = $script === 'test-js-coverage';
+	$to_split[] = array(
+		'name'         => $is_cov ? 'Code coverage (JS, %s)' : 'JS tests (%s)',
+		'script'       => $script,
+		'timeout'      => 15, // 2026-10-06: Successful runs seem to take 3-7 minutes.
+		'coverage'     => $is_cov,
+		'split_config' => $js_split_config,
+	);
+}
+
+// Add JS React 18 test during the React 19 migration.
+// @todo Remove this when we drop support for WordPress Core versions containing React 18.
+$to_split[] = array(
+	'name'               => 'JS tests (React 18, %s)',
+	'script'             => 'test-js',
+	'timeout'            => 15, // 2026-10-06: Successful runs seem to take 3-7 minutes.
+	'with-react-version' => 18,
+	'split_config'       => $js_split_config,
+);
+
+/*
+ * Split jobs: one job for each group in `split_config.groups`, then `split_config.generic` jobs to round-robin everything else.
+ * Groups are keyed by job name, with a project slug or an array of slugs as the value.
+ * For example, this config gives "Test name (jetpack)", "Test name (backup)", "Test name (1 of 2)", and "Test name (2 of 2)":
+ *
+ * array(
+ *   'name'         => 'Test name (%s)',
+ *   'split_config' => array(
+ *     'groups'  => array(
+ *       'jetpack' => 'plugins/jetpack',
+ *       'backup'  => array( 'packages/backup', 'plugins/backup' ),
+ *     ),
+ *     'generic' => 2,
+ *   ),
+ * )
+ */
+foreach ( $to_split as $m ) {
+	$split = $m['split_config'];
+	unset( $m['split_config'] );
+	$exclude = array();
+	foreach ( $split['groups'] as $group => $slugs ) {
+		$slugs    = array_values( (array) $slugs );
+		$exclude  = array_merge( $exclude, $slugs );
+		$matrix[] = array_merge(
+			$m,
+			array(
+				'name'         => sprintf( $m['name'], $group ),
+				'split-groups' => $slugs,
+			)
+		);
+	}
+	for ( $i = 1; $i <= $split['generic']; $i++ ) {
+		$matrix[] = array_merge(
+			$m,
+			array(
+				'name'          => sprintf( $m['name'], "$i of {$split['generic']}" ),
+				'split-num'     => $i,
+				'split-total'   => $split['generic'],
+				'split-exclude' => $exclude,
+			)
+		);
+	}
+}
+
+// END matrix definitions.
+// Now, validation.
+
+$any_errors = false;
+
+/**
+ * Output an error for GH Actions.
+ *
+ * @param string $fmt Format string for printf.
+ * @param mixed  ...$args Arguments as for printf.
+ */
+function error( $fmt, ...$args ) {
+	global $any_errors;
+
+	$any_errors = true;
+
+	$msg = strtr(
+		sprintf( $fmt, ...$args ),
+		array(
+			"\r" => '',
+			"\n" => '%0A',
+		)
+	);
+	fprintf( STDERR, "---\n::error::%s\n---\n", $msg );
+}
+
+/**
+ * Join an array with commas and "or".
+ *
+ * @param array $vals Values to join.
+ * @return string
+ */
+function join_or( $vals ) {
+	if ( count( $vals ) > 1 ) {
+		$vals                       = array_values( $vals );
+		$vals[ count( $vals ) - 1 ] = 'or ' . $vals[ count( $vals ) - 1 ];
+	}
+	return implode( count( $vals ) > 2 ? ', ' : ' ', $vals );
+}
+
+$names     = array();
+$artifacts = array();
+foreach ( $matrix as &$m ) {
+	$orig = json_encode( $m, JSON_FORCE_OBJECT | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+	$m   += $default_matrix_vars;
+
+	// Name must be a non-empty string, and must be unique.
+	if ( ! is_string( $m['name'] ) || '' === $m['name'] ) {
+		error( "Matrix entry does not have a valid `name`:\n%s", $orig );
+		continue;
+	}
+	if ( isset( $names[ $m['name'] ] ) ) {
+		error( "Duplicate entries for name '%s':\n%s\n%s", $m['name'], $names[ $m['name'] ], $orig );
+	} else {
+		$names[ $m['name'] ] = $orig;
+	}
+
+	// Script must be a non-empty string.
+	if ( ! is_string( $m['script'] ) || '' === $m['script'] ) {
+		error( "Matrix entry does not have a `script`:\n%s", $orig );
+	}
+
+	// Default artifact from name.
+	if ( null === $m['artifact'] ) {
+		$m['artifact'] = strtr(
+			$m['name'],
+			array(
+				': ' => ' - ',
+			)
+		);
+	}
+
+	// Validate artifact characters.
+	// @see https://github.com/actions/toolkit/blob/main/packages/artifact/docs/additional-information.md#non-supported-characters .
+	$chars = array(
+		'"'  => 'double quotes',
+		':'  => 'colons',
+		'<'  => 'angle brackets',
+		'>'  => 'angle brackets',
+		'|'  => 'pipes',
+		'*'  => 'asterisks',
+		'?'  => 'question marks',
+		'\\' => 'backslashes',
+		'/'  => 'slashes',
+	);
+	$bad   = array();
+	foreach ( $chars as $char => $name ) {
+		if ( strpos( $m['artifact'], $char ) !== false ) {
+			$bad[] = $name;
+		}
+	}
+	if ( $bad ) {
+		$bad = join_or( array_unique( $bad ) );
+		error( "Artifact name '%s' cannot contain $bad", $m['artifact'] );
+	}
+
+	// Artifact name must be unique.
+	if ( isset( $artifacts[ $m['artifact'] ] ) ) {
+		error( "Duplicate entries for artifact '%s':\n%s\n%s", $m['artifact'], $artifacts[ $m['artifact'] ], $orig );
+	} else {
+		$artifacts[ $m['artifact'] ] = $orig;
+	}
+
+	// Values for `php` and `node` must be strings, floats will break.
+	foreach ( array( 'php', 'node' ) as $key ) {
+		if ( ! is_string( $m[ $key ] ) ) {
+			error( "Key '%s' must be a string\n%s", $key, $orig );
+		}
+	}
+
+	// Only specific values allowed for `wp`.
+	$valid_wp = array( 'latest', 'previous', 'trunk', 'none' );
+	if ( ! in_array( $m['wp'], $valid_wp, true ) ) {
+		$valid_wp = join_or(
+			array_map(
+				function ( $v ) {
+					return "'$v'";
+				},
+				$valid_wp
+			)
+		);
+		error( "Key `wp` must be %s\n%s", $valid_wp, $orig );
+	}
+
+	// Coverage runs must set the `coverage` flag accordingly.
+	$is_cov_script = preg_match( '/^test-\w+-coverage$/', $m['script'] ) === 1;
+	if ( $m['coverage'] !== $is_cov_script ) {
+		error( "Key `coverage` must be %s for script `%s`!\n%s", $is_cov_script ? 'true' : 'false', $m['script'], $orig );
+	}
+
+	if ( ( $m['split-num'] === null ) !== ( $m['split-total'] === null ) ) {
+		error( "Keys `split-num` and `split-total` must both be set or both be null!\n%s", $orig );
+	} elseif ( $m['split-num'] !== null ) {
+		if ( ! is_int( $m['split-num'] ) || ! is_int( $m['split-total'] ) ) {
+			error( "Keys `split-num` and `split-total` must be integers!\n%s", $orig );
+		} elseif ( $m['split-total'] < 1 ) {
+			error( "Key `split-total` must be positive!\n%s", $orig );
+		} elseif ( $m['split-num'] < 1 || $m['split-num'] > $m['split-total'] ) {
+			error( "Key `split-num` must be between 1 and `split-total`!\n%s", $orig );
+		}
+	}
+
+	if ( $m['split-groups'] !== null && ( ! is_array( $m['split-groups'] ) || ! $m['split-groups'] ) ) {
+		error( "Key `split-groups` must be a non-empty array or null!\n%s", $orig );
+	}
+
+	// Either use number or projects.
+	if ( $m['split-num'] !== null && $m['split-groups'] !== null ) {
+		error( "Keys `split-num` and `split-groups` cannot both be set!\n%s", $orig );
+	}
+
+	// Make sure `split_config` isn't in a normal `$matrix` entry instead of `$to_split`.
+	if ( isset( $m['split_config'] ) ) {
+		error( "Key `split_config` is only valid for entries in `\$to_split`!\n%s", $orig );
+	}
+}
+unset( $m );
+
+// @phan-suppress-next-line PhanImpossibleConditionInGlobalScope -- Phan is confused: https://github.com/phan/phan/issues/5575
+if ( $any_errors ) {
+	exit( 1 );
+}
+
+echo json_encode( $matrix, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";

@@ -1,0 +1,14 @@
+{
+	"extends": "jetpack-js-tools/tsconfig.base.json",
+	// List all sources and source-containing subdirs.
+	"include": [
+		"index.jsx",
+		"components",
+		"hooks",
+		"helpers",
+		"state",
+		"test",
+		"types.ts",
+		"declarations.d.ts"
+	]
+}

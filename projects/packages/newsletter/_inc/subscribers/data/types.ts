@@ -1,0 +1,222 @@
+/**
+ * Subscriber and API response types — mirrors the WP.com `/wpcom/v2/sites/{id}/subscribers`
+ * payload (with `use_new_helper=true`) so we can render the DataViews table directly from
+ * the proxy response.
+ */
+
+export type SubscriptionStatus =
+	| 'Subscribed'
+	| 'Not sending'
+	| 'Not subscribed'
+	| 'Not confirmed'
+	| 'Unconfirmed'
+	| 'Blocked'
+	| string;
+
+export type SubscriptionStatusReason = 'emails_paused' | 'bounced' | 'blocked';
+
+export type SubscriptionPlan = {
+	subscription_id?: number;
+	is_comp: boolean;
+	comp_id?: number;
+	is_gift?: boolean;
+	paid_subscription_id?: string;
+	status?: string;
+	title?: string;
+	currency?: string;
+	renewal_period?: string;
+	renewal_price?: number;
+	renew_interval?: string;
+	inactive_renew_interval?: string;
+	start_date?: string;
+	end_date?: string | null;
+};
+
+export type Subscriber = {
+	user_id: number;
+	display_name: string;
+	email_address: string;
+	avatar?: string;
+	subscription_status: SubscriptionStatus;
+	subscription_status_reason?: SubscriptionStatusReason | null;
+
+	// WP.com-side subscription (null when subscriber is email-only).
+	wpcom_subscription_id?: number;
+	wpcom_date_subscribed?: string | null;
+
+	// Email-side subscription (always present for email subscribers).
+	email_subscription_id?: number;
+	email_date_subscribed?: string | null;
+
+	// Paid / comp subscriptions, only present when `use_new_helper=true`.
+	plans?: SubscriptionPlan[];
+
+	bounce_retry?: BounceRetry | null;
+};
+
+// Bounce retry state, present when `subscription_status_reason` is `bounced`. Dates are ISO 8601 UTC.
+export type BounceRetry = {
+	can_retry: boolean;
+	sent_on: string | null;
+};
+
+/**
+ * Wire shape of a subscriber row.
+ *
+ * WP.com's formatter casts every digit-only string in the response to an integer, so an all-digits
+ * display name arrives numeric. Fetchers normalize it before the rest of the app sees a subscriber.
+ */
+export type RawSubscriber< T extends Subscriber = Subscriber > = Omit< T, 'display_name' > & {
+	display_name?: string | number | null;
+};
+
+export type RawSubscribersResponse = Omit< SubscribersResponse, 'subscribers' > & {
+	subscribers?: RawSubscriber[];
+};
+
+export type SubscribersResponse = {
+	total: number;
+	pages: number;
+	page: number;
+	per_page: number;
+	subscribers: Subscriber[];
+	is_owner_subscribed?: boolean;
+};
+
+export type SubscribersSortField = 'date_subscribed' | 'name' | 'plan' | 'subscription_status';
+
+export type SubscribersSortOrder = 'asc' | 'desc';
+
+export type SubscribersFilter =
+	| 'all'
+	| 'paid'
+	| 'comp'
+	| 'free'
+	| 'email_subscriber'
+	| 'reader_subscriber'
+	| 'unconfirmed_subscriber'
+	| 'blocked_subscriber';
+
+export type SubscribersQueryParams = {
+	page: number;
+	perPage: number;
+	sort: SubscribersSortField;
+	sortOrder: SubscribersSortOrder;
+	search?: string;
+	filters: SubscribersFilter[];
+};
+
+/**
+ * The table's filters, search and sort, which the CSV download sends so the file matches the table.
+ */
+export type SubscribersExportQuery = {
+	filters: SubscribersFilter[];
+	search: string;
+	sort: SubscribersSortField;
+	sortOrder: SubscribersSortOrder;
+};
+
+export type RemoveSubscriberPayload = {
+	user_id?: number;
+	email_subscription_id?: number;
+	paid_subscription_ids?: string[];
+};
+
+export type RemoveSubscriberError = {
+	step: string;
+	id: string;
+	error: string;
+};
+
+export type RemoveSubscriberResponse = {
+	ok: boolean;
+	errors: RemoveSubscriberError[];
+};
+
+export type AddSubscribersResponse = {
+	// Async import job id returned by `/sites/{id}/subscribers/import`.
+	upload_id?: number;
+	[ key: string ]: unknown;
+};
+
+export type ImportJobStatus =
+	'pending' | 'awaiting' | 'importing' | 'imported' | 'failed' | 'cancelled';
+
+export type ImportJob = {
+	id: number;
+	status: ImportJobStatus;
+	// WP.com sends counts as numeric strings (e.g. `"1"`).
+	email_count?: number | string;
+	// Per-outcome counts, populated once the job reaches a terminal state. Same numeric-string
+	// quirk as email_count. WP.com does not return a human-readable failure reason on the job — the
+	// per-email reasons only go to the import confirmation email — so these counts are all the
+	// dashboard has to describe the outcome.
+	subscribed_count?: number | string;
+	already_subscribed_count?: number | string;
+	failed_subscribed_count?: number | string;
+	scheduled_at?: string;
+	[ key: string ]: unknown;
+};
+
+export type SubscriberCountry = {
+	code: string;
+	name: string;
+};
+
+export type SubscriberDetails = Subscriber & {
+	country?: SubscriberCountry | null;
+	url?: string | null;
+	open_rate?: number;
+
+	// Date of whichever subscription the endpoint resolved. Unlike the list, the individual dates
+	// are full ISO strings with an offset, and the `wpcom_`/`email_` pair is null when absent.
+	date_subscribed?: string;
+};
+
+export type NewsletterCategory = {
+	id: number;
+	name: string;
+	slug?: string;
+	description?: string;
+	parent?: number;
+	subscription_count?: number;
+	// Only present on the per-subscriber response: false when the subscriber opted out of this
+	// category. WP.com stores opt-outs, so every site category comes back and `subscribed` is the
+	// discriminator — not the presence of the entry.
+	subscribed?: boolean;
+};
+
+export type SubscribedNewsletterCategories = {
+	// Whether the site has Newsletter categories turned on. When false the categories are
+	// meaningless and the UI hides the field entirely (mirrors Calypso).
+	enabled: boolean;
+	newsletter_categories: NewsletterCategory[];
+};
+
+// Site-level newsletter categories (the `/wpcom/v2/newsletter-categories` list), independent of
+// any one subscriber. Same shape as the per-subscriber response minus the `subscribed`
+// discriminator — used to gate and populate the "add to specific categories" import picker.
+export type NewsletterCategoriesData = {
+	// Whether the site has Newsletter categories turned on. Sourced from the site option, so it
+	// tracks the Newsletter settings toggle. When false the import picker is hidden entirely.
+	enabled: boolean;
+	newsletter_categories: NewsletterCategory[];
+};
+
+// Payload for the add-subscribers import. `categories` carries the ids selected in the import
+// picker; omitted/empty when the user doesn't assign any, matching Calypso's `importCsvSubscribers`.
+export type AddSubscribersPayload = {
+	emails: string[];
+	categories?: number[];
+};
+
+export type SubscriberStats = {
+	emails_sent: number;
+	unique_opens: number;
+	unique_clicks: number;
+};
+
+export type SendBounceConfirmationResponse = {
+	success: boolean;
+	bounce_retry?: BounceRetry | null;
+};

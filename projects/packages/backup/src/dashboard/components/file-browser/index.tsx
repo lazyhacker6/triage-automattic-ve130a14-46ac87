@@ -1,0 +1,831 @@
+import { CheckboxControl } from '@wordpress/components';
+import { useMergeRefs } from '@wordpress/compose';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from '@wordpress/element';
+import { __, _n, isRTL, sprintf } from '@wordpress/i18n';
+// The upstream names don't describe what they draw: `file` is a folder
+// glyph, `page` is a document one, and there is no `folder` export.
+// `tests/file-browser-icons.test.tsx` holds these aliases in place.
+import {
+	Icon,
+	chevronLeft,
+	chevronRight,
+	chevronDown,
+	file as folderIcon,
+	page as fileIcon,
+} from '@wordpress/icons';
+import { Spinner, Stack, Text } from '@wordpress/ui';
+import { useFileTree } from '../../hooks/use-file-tree';
+import useNarrowElement from '../../hooks/use-narrow-element';
+import { isFolder } from '../../types/file-tree';
+import FileInfoCard from '../file-info-card';
+import FileInfoDialog from '../file-info-dialog';
+import QueryError from '../query-error';
+import './style.scss';
+import type { FileNode, FileNodeFile } from '../../types/file-tree';
+import type { MouseEvent } from 'react';
+
+/**
+ * Tree-checkbox selection state.
+ *
+ * `selected` holds paths the visitor explicitly checked; `deselected`
+ * holds the exception paths they unchecked while inside a selected
+ * ancestor's subtree. A path is "effectively selected" when its closest
+ * own-set entry (or, falling back, an ancestor's `selected` entry) is
+ * positive — `selected` beats `deselected` at the same row, and a row's
+ * own entry beats any ancestor.
+ */
+export type FileSelection = {
+	selected: ReadonlySet< string >;
+	deselected: ReadonlySet< string >;
+};
+
+export const EMPTY_FILE_SELECTION: FileSelection = {
+	selected: new Set(),
+	deselected: new Set(),
+};
+
+// The card track runs from `CARD_TRACK` up to `CARD_MAX`; the tree track never drops below `MIN_TREE`.
+// Below `CARD_TRACK + COLUMN_GAP + MIN_TREE` there is no room for two columns, so the dialog takes over.
+const CARD_TRACK = 280;
+const CARD_MAX = 450;
+const COLUMN_GAP = 16;
+// Floor for the tree: a nested row spends ~120px on indent, checkbox, chevron
+// and glyph before a single character of filename.
+const MIN_TREE = 344;
+
+// Panel width at which the card can take a column beside the tree. Below it
+// the card leaves the tree ~100px and filenames truncate to `wp…`, so the
+// preview moves into `<FileInfoDialog>` instead.
+const TWO_COLUMN_MIN = CARD_TRACK + COLUMN_GAP + MIN_TREE;
+
+type Props = {
+	rewindId: string;
+	selection: FileSelection;
+	onSelectionChange: ( next: FileSelection ) => void;
+	onSelectionIdsChange?: ( ids: string[] ) => void;
+};
+
+/**
+ * Parent path for a tree path. Returns `''` for top-level paths (their
+ * parent is the conceptual root) and `null` for the root itself.
+ *
+ * @param path - Absolute path under the backup (e.g. `'/wp-content/themes'`).
+ * @return Parent path, `''` for top-level, or `null` for the root.
+ */
+function parentOf( path: string ): string | null {
+	if ( path === '' ) {
+		return null;
+	}
+	const idx = path.lastIndexOf( '/' );
+	return idx <= 0 ? '' : path.slice( 0, idx );
+}
+
+/**
+ * Resolves whether `path` is effectively selected given the current
+ * selection sets, by walking up the path until we hit an own entry.
+ *
+ * @param path     - Path to resolve.
+ * @param selected - Current `selected` set.
+ * @param deselect - Current `deselected` set.
+ * @return True when the path resolves to selected.
+ */
+function isPathSelected(
+	path: string,
+	selected: ReadonlySet< string >,
+	deselect: ReadonlySet< string >
+): boolean {
+	let current: string | null = path;
+	while ( current && current !== '' ) {
+		if ( selected.has( current ) ) {
+			return true;
+		}
+		if ( deselect.has( current ) ) {
+			return false;
+		}
+		current = parentOf( current );
+	}
+	return false;
+}
+
+/**
+ * Returns true when any path in `paths` is a descendant of `prefix`.
+ *
+ * @param paths  - Set of paths to scan.
+ * @param prefix - Ancestor path (without trailing slash).
+ * @return True when at least one path starts with `prefix + "/"`.
+ */
+function hasDescendant( paths: ReadonlySet< string >, prefix: string ): boolean {
+	const needle = `${ prefix }/`;
+	for ( const p of paths ) {
+		if ( p.startsWith( needle ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Removes every entry in `set` that's a strict descendant of `prefix`.
+ * Mutates `set` in place.
+ *
+ * @param set    - Set to prune.
+ * @param prefix - Ancestor path (without trailing slash).
+ */
+function pruneDescendants( set: Set< string >, prefix: string ): void {
+	const needle = `${ prefix }/`;
+	for ( const p of [ ...set ] ) {
+		if ( p.startsWith( needle ) ) {
+			set.delete( p );
+		}
+	}
+}
+
+/**
+ * Marks `path` as effectively deselected by either dropping its own
+ * positive entry (and pruning its now-orphaned subtree exceptions) or
+ * recording a negative exception against an inherited ancestor. Mutates
+ * the provided sets.
+ *
+ * @param path           - Path to deselect.
+ * @param nextSelected   - Mutable working `selected` set.
+ * @param nextDeselected - Mutable working `deselected` set.
+ */
+function applyDeselect(
+	path: string,
+	nextSelected: Set< string >,
+	nextDeselected: Set< string >
+): void {
+	if ( nextSelected.has( path ) ) {
+		nextSelected.delete( path );
+		pruneDescendants( nextSelected, path );
+		pruneDescendants( nextDeselected, path );
+	} else {
+		nextDeselected.add( path );
+	}
+}
+
+/**
+ * Marks `path` as effectively selected. Clears any own negative entry
+ * and — only if removing that exception wouldn't already leave the row
+ * inherited-selected from an ancestor — adds an own positive entry.
+ * Descendant entries collapse into the inherited state. Mutates the
+ * provided sets.
+ *
+ * The ancestor check matters when an ancestor is itself in
+ * `deselected`: dropping our own exception alone would leave the row
+ * inherited-deselected, so the visitor's click wouldn't actually
+ * re-check it.
+ *
+ * @param path           - Path to select.
+ * @param nextSelected   - Mutable working `selected` set.
+ * @param nextDeselected - Mutable working `deselected` set.
+ */
+function applySelect(
+	path: string,
+	nextSelected: Set< string >,
+	nextDeselected: Set< string >
+): void {
+	nextDeselected.delete( path );
+	if ( ! isPathSelected( path, nextSelected, nextDeselected ) ) {
+		nextSelected.add( path );
+	}
+	// Any descendant exception or now-redundant positive collapses into
+	// the inherited state from this row.
+	pruneDescendants( nextSelected, path );
+	pruneDescendants( nextDeselected, path );
+}
+
+/**
+ * Walks up from `path` and deselects ancestors whose loaded children
+ * are now all effectively deselected. Stops at the first ancestor that
+ * still has a selected child, an ancestor whose children we haven't
+ * loaded, or the conceptual root. Mutates the provided sets.
+ *
+ * @param path           - Path that just became deselected.
+ * @param nextSelected   - Mutable working `selected` set.
+ * @param nextDeselected - Mutable working `deselected` set.
+ * @param loadedChildren - Map of folder path → loaded children list; top-level roots live under the empty-string key.
+ */
+function propagateDeselectUp(
+	path: string,
+	nextSelected: Set< string >,
+	nextDeselected: Set< string >,
+	loadedChildren: ReadonlyMap< string, FileNode[] >
+): void {
+	let current: string | null = path;
+	while ( current !== null ) {
+		const parent = parentOf( current );
+		if ( parent === null || parent === '' ) {
+			return;
+		}
+		if ( ! isPathSelected( parent, nextSelected, nextDeselected ) ) {
+			return;
+		}
+		const siblings = loadedChildren.get( parent );
+		if ( ! siblings ) {
+			return;
+		}
+		const allDeselected = siblings.every(
+			sibling => ! isPathSelected( sibling.path, nextSelected, nextDeselected )
+		);
+		if ( ! allDeselected ) {
+			return;
+		}
+		applyDeselect( parent, nextSelected, nextDeselected );
+		current = parent;
+	}
+}
+
+/**
+ * Symmetric to `propagateDeselectUp`: walks up from `path` and
+ * re-selects ancestors whose loaded children are now all effectively
+ * selected. Stops at the first ancestor that's already effectively
+ * selected, has an unselected loaded child, has no loaded children, or
+ * is the conceptual root. Mutates the provided sets.
+ *
+ * @param path           - Path that just became selected.
+ * @param nextSelected   - Mutable working `selected` set.
+ * @param nextDeselected - Mutable working `deselected` set.
+ * @param loadedChildren - Map of folder path → loaded children list.
+ */
+function propagateSelectUp(
+	path: string,
+	nextSelected: Set< string >,
+	nextDeselected: Set< string >,
+	loadedChildren: ReadonlyMap< string, FileNode[] >
+): void {
+	let current: string | null = path;
+	while ( current !== null ) {
+		const parent = parentOf( current );
+		if ( parent === null || parent === '' ) {
+			return;
+		}
+		if ( isPathSelected( parent, nextSelected, nextDeselected ) ) {
+			return;
+		}
+		const siblings = loadedChildren.get( parent );
+		if ( ! siblings ) {
+			return;
+		}
+		const allSelected = siblings.every( sibling =>
+			isPathSelected( sibling.path, nextSelected, nextDeselected )
+		);
+		if ( ! allSelected ) {
+			return;
+		}
+		applySelect( parent, nextSelected, nextDeselected );
+		current = parent;
+	}
+}
+
+/**
+ * Collects the effectively-selected leaves in the loaded subtree of
+ * `roots`, in tree order.
+ *
+ * A "leaf" here is what the server would download as one opaque unit:
+ * a file, or a folder whose children we haven't loaded yet (whatever
+ * it contains is bundled into that single selection). Folders we've
+ * already expanded contribute their leaves instead of themselves, and
+ * indeterminate folders contribute only the effectively-selected
+ * descendants underneath them — neither the partial folder nor the
+ * deselected branches count.
+ *
+ * A ticked but unexpanded folder is therefore one entry standing for
+ * however many files it holds. That is what upstream wants — the same
+ * shape Calypso builds — so this list is both the label's count and the
+ * download's include list.
+ *
+ * @param roots          - Top-level nodes to start from.
+ * @param selection      - Current selection sets.
+ * @param loadedChildren - Map of folder path → loaded children list.
+ * @return The effectively-selected leaf nodes.
+ */
+function collectSelectedInLoadedTree(
+	roots: FileNode[],
+	selection: FileSelection,
+	loadedChildren: ReadonlyMap< string, FileNode[] >
+): FileNode[] {
+	const { selected, deselected } = selection;
+	const leaves: FileNode[] = [];
+	const walk = ( nodes: FileNode[], inheritedSelected: boolean ) => {
+		for ( const node of nodes ) {
+			const ownSelected = selected.has( node.path );
+			const ownDeselected = deselected.has( node.path );
+			const eff = ownSelected || ( ! ownDeselected && inheritedSelected );
+			const loadedKids = isFolder( node ) ? loadedChildren.get( node.path ) : undefined;
+			if ( loadedKids ) {
+				// Folder with known contents — its leaves count, not itself.
+				walk( loadedKids, eff );
+			} else if ( eff ) {
+				// File, or a folder whose contents we haven't loaded:
+				// the server treats either as a single downloadable unit.
+				leaves.push( node );
+			}
+		}
+	};
+	walk( roots, false );
+	return leaves;
+}
+
+/**
+ * Lazy file-tree browser for the selected backup. Folders fetch their
+ * children on first expand via `useFileTree`; selecting a file opens
+ * `<FileInfoCard>` to the right of the tree with a text preview when the
+ * mime type is text-shaped.
+ *
+ * Selection state lives in the parent (`<BackupDetail>`) so its header
+ * buttons can swap between "Download backup" and "Download N selected
+ * files" using the same `FileSelection` shape that this tree drives.
+ *
+ * @param props                      - Component props.
+ * @param props.rewindId             - The selected backup's rewindId; surfaced as a data attribute today, the future REST hook will use it.
+ * @param props.selection            - Current selection state (selected + deselected sets).
+ * @param props.onSelectionChange    - Called with the next state when any row toggles.
+ * @param props.onSelectionIdsChange - Called whenever the selected leaves change, with the `ls` entry ids a download request could name them by.
+ * @return The rendered tree.
+ */
+export default function FileBrowser( {
+	rewindId,
+	selection,
+	onSelectionChange,
+	onSelectionIdsChange,
+}: Props ) {
+	const [ openFile, setOpenFile ] = useState< FileNodeFile | null >( null );
+	const [ narrowRef, isNarrow ] = useNarrowElement( TWO_COLUMN_MIN );
+	const panelRef = useRef< HTMLDivElement >( null );
+	// Spread on the root in both branches, so it is one element that outlives the error notice and can take its focus.
+	const rootProps = {
+		className: 'jpb-file-browser',
+		ref: useMergeRefs( [ narrowRef, panelRef ] ),
+		'data-rewind-id': rewindId,
+		tabIndex: -1,
+		role: 'group',
+		'aria-label': __( 'Files in this backup', 'jetpack-backup-pkg' ),
+	};
+	const {
+		children: rootsData,
+		isLoading: rootsLoading,
+		error: rootsError,
+		isFetching: rootsFetching,
+		refetch: refetchRoots,
+	} = useFileTree( rewindId, null );
+	const roots = useMemo< FileNode[] >( () => rootsData ?? [], [ rootsData ] );
+	const { selected, deselected } = selection;
+
+	// Loaded folder children, hoisted here so toggle propagation and the
+	// effective-selected count can reason about siblings the visitor has
+	// already expanded. Top-level roots live under the empty-string key
+	// so `parentOf('/foo') === ''` resolves consistently.
+	const [ loadedChildren, setLoadedChildren ] = useState< Map< string, FileNode[] > >(
+		() => new Map< string, FileNode[] >()
+	);
+
+	// Sync the lazily-fetched root list into the loadedChildren map once
+	// it resolves so toggle propagation can see the top-level siblings.
+	useEffect( () => {
+		if ( ! rootsData ) {
+			return;
+		}
+		setLoadedChildren( prev => {
+			if ( prev.get( '' ) === rootsData ) {
+				return prev;
+			}
+			const next = new Map( prev );
+			next.set( '', rootsData );
+			return next;
+		} );
+	}, [ rootsData ] );
+
+	const registerChildren = useCallback( ( path: string, children: FileNode[] ) => {
+		setLoadedChildren( prev => {
+			if ( prev.get( path ) === children ) {
+				return prev;
+			}
+			const next = new Map( prev );
+			next.set( path, children );
+			return next;
+		} );
+	}, [] );
+
+	// Toggle a row given its current effective state. The caller passes
+	// `effectiveBefore` so the row can resolve "I see myself as checked"
+	// without re-deriving the inherited state here.
+	//
+	// In both directions we apply the leaf change first, then walk up:
+	// each ancestor whose loaded children have all collapsed to the new
+	// state gets pulled along with it. The walk stops at the first
+	// ancestor whose children we haven't loaded (we can't tell whether
+	// unseen descendants would still hold the other state), the first
+	// ancestor that's already in the desired state, or the conceptual
+	// root.
+	const toggleAt = useCallback(
+		( path: string, effectiveBefore: boolean ) => {
+			const nextSelected = new Set( selected );
+			const nextDeselected = new Set( deselected );
+
+			if ( effectiveBefore ) {
+				applyDeselect( path, nextSelected, nextDeselected );
+				propagateDeselectUp( path, nextSelected, nextDeselected, loadedChildren );
+			} else {
+				applySelect( path, nextSelected, nextDeselected );
+				propagateSelectUp( path, nextSelected, nextDeselected, loadedChildren );
+			}
+
+			onSelectionChange( { selected: nextSelected, deselected: nextDeselected } );
+		},
+		[ selected, deselected, loadedChildren, onSelectionChange ]
+	);
+
+	const selectedLeaves = useMemo(
+		() => collectSelectedInLoadedTree( roots, selection, loadedChildren ),
+		[ roots, selection, loadedChildren ]
+	);
+	// The header counts every selected leaf; the ids reported upward are only what
+	// a request can name. An entry upstream gave no `id` is in the first list and
+	// not the second, which is why the caller labels from the ids.
+	const selectedCount = selectedLeaves.length;
+	const selectedIds = useMemo(
+		() =>
+			selectedLeaves
+				.map( leaf => leaf.id )
+				.filter( ( id ): id is string => typeof id === 'string' && id !== '' ),
+		[ selectedLeaves ]
+	);
+
+	useEffect( () => {
+		onSelectionIdsChange?.( selectedIds );
+	}, [ selectedIds, onSelectionIdsChange ] );
+
+	// A selected folder covers its unloaded subtree, so "everything" is every root with no exceptions.
+	const allSelected =
+		roots.length > 0 && deselected.size === 0 && roots.every( node => selected.has( node.path ) );
+	const someSelected = selected.size > 0 && ! allSelected;
+	const selectionCountId = useId();
+
+	// Clears only from a full selection, so a click on a partial one never discards it.
+	const toggleSelectAll = useCallback( () => {
+		if ( allSelected ) {
+			onSelectionChange( EMPTY_FILE_SELECTION );
+			return;
+		}
+		onSelectionChange( {
+			selected: new Set( roots.map( node => node.path ) ),
+			deselected: new Set(),
+		} );
+	}, [ allSelected, roots, onSelectionChange ] );
+
+	// Closing the card unmounts the element that currently holds focus, which
+	// drops focus to `<body>` and sends the next Tab back to the top of the
+	// document — on a deep tree, every row again. Moving focus in and handing
+	// it back are one contract, so the opener is recorded on the way in.
+	const openerRef = useRef< HTMLButtonElement | null >( null );
+	const openInfoCard = useCallback( ( file: FileNodeFile, opener: HTMLButtonElement ) => {
+		openerRef.current = opener;
+		setOpenFile( file );
+	}, [] );
+	const closeInfoCard = useCallback( () => {
+		setOpenFile( null );
+		openerRef.current?.focus();
+	}, [] );
+
+	// The card only takes a column when it is actually rendered there; a bare
+	// tree keeps the full panel width.
+	const layoutStyle =
+		openFile && ! isNarrow
+			? {
+					gridTemplateColumns: `minmax(${ MIN_TREE }px, 1fr) minmax(${ CARD_TRACK }px, ${ CARD_MAX }px)`,
+				}
+			: undefined;
+	const layoutClassName =
+		openFile && ! isNarrow
+			? 'jpb-file-browser__layout jpb-file-browser__layout--with-card'
+			: 'jpb-file-browser__layout';
+
+	// A failed root read would render as an empty backup under a header inviting selection, so
+	// replace the whole browser. A failed background refresh still has its rows and keeps the tree.
+	if ( rootsError && ! rootsData ) {
+		return (
+			<div { ...rootProps }>
+				<QueryError
+					title={ __( "We couldn't load this backup's files.", 'jetpack-backup-pkg' ) }
+					error={ rootsError }
+					referenceId={ { kind: 'backup', value: rewindId } }
+					onRetry={ refetchRoots }
+					withSupportLink
+					isRetrying={ rootsFetching }
+					returnFocusTo={ panelRef }
+				/>
+			</div>
+		);
+	}
+
+	return (
+		<div { ...rootProps }>
+			<div className={ layoutClassName } style={ layoutStyle }>
+				<div className="jpb-file-browser__main">
+					<Stack direction="row" align="center" gap="sm" className="jpb-file-browser__selection">
+						<CheckboxControl
+							checked={ allSelected }
+							indeterminate={ someSelected }
+							label={
+								allSelected
+									? __( 'Clear selection', 'jetpack-backup-pkg' )
+									: __( 'Select all', 'jetpack-backup-pkg' )
+							}
+							aria-describedby={ selectionCountId }
+							onChange={ toggleSelectAll }
+							__nextHasNoMarginBottom
+						/>
+						<Text variant="body-sm" className="jpb-text-muted" id={ selectionCountId }>
+							{ sprintf(
+								/* translators: %d count of selected items (files + opaque folders) */
+								_n( '%d item selected', '%d items selected', selectedCount, 'jetpack-backup-pkg' ),
+								selectedCount
+							) }
+						</Text>
+					</Stack>
+					<div className="jpb-file-browser__tree">
+						{ rootsLoading && (
+							<div className="jpb-file-browser__loading">
+								<Spinner />
+							</div>
+						) }
+						{ ! rootsLoading &&
+							roots.map( node => (
+								<NodeRow
+									key={ node.path }
+									node={ node }
+									depth={ 0 }
+									openPath={ openFile?.manifestPath }
+									ancestorSelected={ false }
+									rewindId={ rewindId }
+									selection={ selection }
+									onToggle={ toggleAt }
+									onOpenFile={ openInfoCard }
+									onRegisterChildren={ registerChildren }
+								/>
+							) ) }
+					</div>
+				</div>
+				{ openFile && ! isNarrow && (
+					<FileInfoCard key={ openFile.manifestPath } file={ openFile } onClose={ closeInfoCard } />
+				) }
+			</div>
+			{ openFile && isNarrow && (
+				<FileInfoDialog key={ openFile.manifestPath } file={ openFile } onClose={ closeInfoCard } />
+			) }
+		</div>
+	);
+}
+
+type NodeRowProps = {
+	node: FileNode;
+	depth: number;
+	openPath: string | undefined;
+	ancestorSelected: boolean;
+	rewindId: string;
+	selection: FileSelection;
+	onToggle: ( path: string, effectiveBefore: boolean ) => void;
+	onOpenFile: ( file: FileNodeFile, opener: HTMLButtonElement ) => void;
+	onRegisterChildren: ( path: string, children: FileNode[] ) => void;
+};
+
+// The closed-folder chevron points toward the inline end, so it flips in RTL.
+const closedChevron = () => ( isRTL() ? chevronLeft : chevronRight );
+
+/**
+ * Recursive row inside the file-browser tree. Folders own their own expand state; while a folder is open, `useFileTree` keeps its children resolved (re-collapsing and re-opening re-issues the fetch).
+ *
+ * `ancestorSelected` propagates top-down and carries the *effective* checked state of the nearest ancestor (own selected beats own deselected beats ancestor).
+ *
+ * A folder renders the indeterminate "—" dash when (a) it's effectively checked and any descendant path lives in `selection.deselected`, or (b) it's effectively unchecked and any descendant lives in `selection.selected`.
+ *
+ * @param props                    - Component props.
+ * @param props.node               - The node to render.
+ * @param props.depth              - Indent depth (root = 0).
+ * @param props.openPath           - Manifest path of the file open in the info card, if any.
+ * @param props.ancestorSelected   - True when this row inherits a checked state from a selected ancestor (modulo its own deselection).
+ * @param props.rewindId           - The selected backup's rewind id, threaded down so each folder row can fetch its own children via `useFileTree`.
+ * @param props.selection          - Current selection state (selected + deselected sets).
+ * @param props.onToggle           - Called with the row's path and current effective state when the checkbox toggles.
+ * @param props.onOpenFile         - Open the info-card for a file path.
+ * @param props.onRegisterChildren - Reports loaded child lists up so the parent can reason about siblings during toggle propagation and the visible-selected count.
+ * @return The rendered row.
+ */
+function NodeRow( {
+	node,
+	depth,
+	openPath,
+	ancestorSelected,
+	rewindId,
+	selection,
+	onToggle,
+	onOpenFile,
+	onRegisterChildren,
+}: NodeRowProps ) {
+	const [ open, setOpen ] = useState( false );
+	const nodeIsFolder = isFolder( node );
+	// Not `null` for a closed row: that means the root, and every row would refetch it once stale.
+	const { children, isLoading, error } = useFileTree( rewindId, node.path, {
+		enabled: open && nodeIsFolder,
+	} );
+	// A failed refresh of a folder whose children are still cached is not a failed folder.
+	const failed = Boolean( error ) && ! children;
+	const { selected, deselected } = selection;
+
+	// Effective check: own positive > own negative > inherited positive.
+	const ownSelected = selected.has( node.path );
+	const ownDeselected = deselected.has( node.path );
+	const isEffectivelySelected = ownSelected || ( ! ownDeselected && ancestorSelected );
+
+	// Indeterminate is symmetric:
+	//   - effectively checked + a deselected descendant (partial-out)
+	//   - effectively unchecked + a selected descendant (partial-in,
+	//     e.g. the visitor selected a leaf without its ancestor folders)
+	// Memoized because `hasDescendant` is O(set) and the relevant set
+	// can change without flipping this row's own state.
+	const isIndeterminate = useMemo( () => {
+		if ( ! nodeIsFolder ) {
+			return false;
+		}
+		const exceptions = isEffectivelySelected ? deselected : selected;
+		return hasDescendant( exceptions, node.path );
+	}, [ isEffectivelySelected, nodeIsFolder, selected, deselected, node.path ] );
+
+	const handleToggleSelected = useCallback(
+		() => onToggle( node.path, isEffectivelySelected ),
+		[ onToggle, node.path, isEffectivelySelected ]
+	);
+	const handleToggleOpen = useCallback( () => setOpen( v => ! v ), [] );
+	// Names the region the toggle expands, so `aria-expanded` has something
+	// to refer to. Per row, because every folder owns its own children.
+	const childrenId = useId();
+	const handleOpenFile = useCallback(
+		( event: MouseEvent< HTMLButtonElement > ) => {
+			if ( ! nodeIsFolder ) {
+				onOpenFile( node as FileNodeFile, event.currentTarget );
+			}
+		},
+		[ onOpenFile, node, nodeIsFolder ]
+	);
+
+	// Register the loaded children with the FileBrowser parent once
+	// they've actually resolved for this folder. The gate skips the
+	// in-flight window between "open clicked" and "fetch resolved"
+	// where `children` still holds whatever the previous render had.
+	const childrenStableRef = useRef< FileNode[] | null >( null );
+	useEffect( () => {
+		if ( ! open || ! nodeIsFolder || isLoading || ! children ) {
+			return;
+		}
+		if ( childrenStableRef.current === children ) {
+			return;
+		}
+		childrenStableRef.current = children;
+		onRegisterChildren( node.path, children );
+	}, [ open, nodeIsFolder, isLoading, children, node.path, onRegisterChildren ] );
+
+	const isOpenFile =
+		! nodeIsFolder && openPath !== undefined && openPath === ( node as FileNodeFile ).manifestPath;
+	const rowClassName = isOpenFile
+		? 'jpb-file-browser__row jpb-file-browser__row--open'
+		: 'jpb-file-browser__row';
+
+	return (
+		<div>
+			<div className={ rowClassName } style={ { paddingInlineStart: 12 + depth * 16 } }>
+				{ /*
+				 * No `label`: `CheckboxControl` renders its `<label>` only under
+				 * `label && …`, so both an empty string and an omitted prop emit
+				 * no label element and leave the input unnamed — which is what
+				 * made every row announce as a bare "checkbox". The name has to
+				 * come through `aria-label` instead, and it names what the box
+				 * selects rather than repeating the row's own label.
+				 */ }
+				<CheckboxControl
+					checked={ isEffectivelySelected }
+					indeterminate={ isIndeterminate }
+					onChange={ handleToggleSelected }
+					aria-label={ sprintf(
+						/* translators: %s: file or folder name. */
+						__( 'Select %s', 'jetpack-backup-pkg' ),
+						node.name
+					) }
+					__nextHasNoMarginBottom
+				/>
+				{ /*
+				 * `dir` isolates the names below: an RTL page otherwise moves a
+				 * leading dot to the visual end, so `.htaccess` reads `htaccess.`.
+				 */ }
+				{ nodeIsFolder ? (
+					// The glyphs are `aria-hidden`, so the folder/file distinction they
+					// carry visually has to be spelled out for assistive tech.
+					<button
+						type="button"
+						className="jpb-file-browser__toggle"
+						aria-expanded={ open }
+						// Points at the wrapper below, which only exists while open.
+						// `aria-controls` referencing an absent id is the documented
+						// behaviour for a collapsed disclosure, and is what every
+						// assistive-tech implementation expects here.
+						aria-controls={ childrenId }
+						aria-label={ sprintf(
+							/* translators: %s: folder name. */
+							__( 'Folder: %s', 'jetpack-backup-pkg' ),
+							node.name
+						) }
+						onClick={ handleToggleOpen }
+					>
+						<Icon icon={ open ? chevronDown : closedChevron() } size={ 16 } />
+						<Icon icon={ folderIcon } size={ 18 } />
+						<span dir="ltr">{ node.name }</span>
+					</button>
+				) : (
+					<button
+						type="button"
+						className="jpb-file-browser__file"
+						aria-current={ isOpenFile ? 'true' : undefined }
+						aria-label={ sprintf(
+							/* translators: %s: file name. */
+							__( 'File: %s', 'jetpack-backup-pkg' ),
+							node.name
+						) }
+						onClick={ handleOpenFile }
+					>
+						<Icon icon={ fileIcon } size={ 18 } />
+						<span dir="ltr">{ node.name }</span>
+					</button>
+				) }
+			</div>
+			{ open && nodeIsFolder && (
+				<div className="jpb-file-browser__children" id={ childrenId }>
+					{ isLoading && (
+						<div
+							className="jpb-file-browser__loading"
+							style={ { paddingInlineStart: 28 + depth * 16 } }
+						>
+							<Spinner />
+						</div>
+					) }
+					{ /*
+					 * A folder whose fetch failed also has no children, so
+					 * without this branch it reports itself as empty — the
+					 * reader is told the folder contains nothing rather than
+					 * that we couldn't look inside it.
+					 */ }
+					{ ! isLoading && failed && (
+						// `alert` rather than `status`: the reader asked for this
+						// folder and got nothing back, so it is worth interrupting.
+						// Both states are announced because each replaces content the
+						// reader is waiting on, and a silent swap reads as a folder
+						// that never finished opening.
+						<div
+							role="alert"
+							className="jpb-file-browser__error"
+							style={ { paddingInlineStart: 44 + depth * 16 } }
+						>
+							{
+								/* translators: shown inside an expanded folder in the backup file browser when its contents could not be fetched. */
+								__( "Couldn't load this folder.", 'jetpack-backup-pkg' )
+							}
+						</div>
+					) }
+					{ /*
+					 * Mounted unconditionally, holding text only once the folder
+					 * has settled. A polite live region inserted *together with*
+					 * its content is the case assistive tech handles least
+					 * consistently — NVDA with Chrome routinely says nothing — and
+					 * the requirement is that the region be in the accessibility
+					 * tree before its content changes. The error above does not
+					 * need this: an inserted `role="alert"` is announced reliably.
+					 */ }
+					<div
+						role="status"
+						className="jpb-file-browser__empty"
+						style={ { paddingInlineStart: 44 + depth * 16 } }
+					>
+						{ ! isLoading && ! failed && ( children ?? [] ).length === 0
+							? /* translators: shown inside an expanded folder in the backup file browser when the folder contains no files. */
+								__( 'Empty', 'jetpack-backup-pkg' )
+							: '' }
+					</div>
+					{ ! isLoading &&
+						( children ?? [] ).map( child => (
+							<NodeRow
+								key={ child.path }
+								node={ child }
+								depth={ depth + 1 }
+								openPath={ openPath }
+								ancestorSelected={ isEffectivelySelected }
+								rewindId={ rewindId }
+								selection={ selection }
+								onToggle={ onToggle }
+								onOpenFile={ onOpenFile }
+								onRegisterChildren={ onRegisterChildren }
+							/>
+						) ) }
+				</div>
+			) }
+		</div>
+	);
+}

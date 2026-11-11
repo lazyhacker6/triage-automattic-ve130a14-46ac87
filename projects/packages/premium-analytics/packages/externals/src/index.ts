@@ -1,0 +1,136 @@
+/**
+ * Shared third-party passthrough module.
+ *
+ * Everything here is re-exported verbatim from an external library. Nothing in
+ * this package may contain Premium Analytics logic — see README.md for why.
+ */
+
+/**
+ * External dependencies
+ */
+import '@automattic/charts/style.css';
+import '@automattic/jetpack-components/jetpack-footer/style.scss';
+
+/**
+ * Charts
+ */
+export {
+	BarChart,
+	ConversionFunnelChart,
+	GeoChart,
+	GlobalChartsProvider,
+	GoogleDataTableColumnRoleType,
+	HeatmapChart,
+	HeatmapChartUnresponsive,
+	LeaderboardChartUnresponsive,
+	Legend,
+	LineChart,
+	PieChartUnresponsive,
+	PieSemiCircleChart,
+	Sparkline,
+	TooltipBox,
+	buildCalendarHeatmapData,
+	getBucketInfo,
+	lightenHexColor,
+	mixHexColors,
+	normalizeColorToHex,
+	useBarColors,
+	useBarLegendItems,
+	useCalendarHeatmapData,
+	useGlobalChartsContext,
+	useMonthCalendarHeatmapData,
+	type BarChartLayout,
+	type BaseLegendItem,
+	type BucketInfo,
+	type ChartTheme,
+	type DataPointDate,
+	type DataPointPercentage,
+	type GeoChartError,
+	type GeoData,
+	type GeoDisplayMode,
+	type GoogleDataTableColumn,
+	type GoogleDataTableRow,
+	type HeatmapColumn,
+	type HeatmapColumnGroup,
+	type HeatmapTooltipData,
+	type LineStyles,
+	type MonthCalendarHeatmapRange,
+	type SeriesData,
+	type TickResolution,
+} from '@automattic/charts';
+
+export { LineShape, RectShape } from '@automattic/charts/visx/legend';
+export { scaleLinear } from '@visx/scale';
+
+/**
+ * WordPress design system
+ *
+ * `Field` is exported as `FormField`: `@wordpress/ui`'s form-field namespace
+ * collides with DataViews' `Field` type under one barrel, and DataViews' name
+ * is what consumers already import. Still a plain re-export, not a wrap.
+ */
+export {
+	AlertDialog,
+	Badge,
+	Button,
+	Card,
+	Dialog,
+	EmptyState,
+	ButtonLink,
+	Field as FormField,
+	Fieldset,
+	Icon,
+	IconButton,
+	Input,
+	InputControl,
+	Link,
+	Menu,
+	Meter,
+	Notice,
+	Popover,
+	Progress,
+	RangeCalendar,
+	SearchableChipSelectControl,
+	SelectControl,
+	Skeleton,
+	Spinner,
+	Stack,
+	Tabs,
+	Text,
+	TextareaControl,
+	Tooltip,
+	ValidatedInputControl,
+	VisuallyHidden,
+} from '@wordpress/ui';
+
+/**
+ * Base UI
+ *
+ * The unstyled parts `@wordpress/ui` is built on, so they are already compiled
+ * in here. Prefixed because `Tabs` above is the design system's styled one.
+ */
+export { DirectionProvider as BaseDirectionProvider } from '@base-ui/react/direction-provider';
+export { Tabs as BaseTabs } from '@base-ui/react/tabs';
+
+/**
+ * DataViews
+ */
+export {
+	DataForm,
+	DataViews,
+	filterSortAndPaginate,
+	type Action,
+	type DataFormControlProps,
+	type DataViewRenderFieldProps,
+	type Field,
+	type Form,
+	type Option,
+	type SupportedLayouts,
+	type View,
+	type ViewBaseProps,
+} from '@wordpress/dataviews';
+
+/**
+ * Jetpack components
+ */
+export { default as JetpackFooter } from '@automattic/jetpack-components/jetpack-footer/unstyled';

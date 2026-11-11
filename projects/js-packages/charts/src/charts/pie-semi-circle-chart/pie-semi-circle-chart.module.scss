@@ -1,0 +1,24 @@
+.pie-semi-circle-chart {
+	// Keeps the tooltip's z-index inside the chart, as `.xy-plot` does.
+	isolation: isolate;
+
+	// Anchors the tooltip, which renders next to the SVG in here.
+	&__plot {
+		position: relative;
+	}
+
+	// Fill parent when no explicit width/height provided
+	&--responsive {
+		height: 100%;
+		width: 100%;
+	}
+
+	.label {
+		font-weight: var(--wpds-typography-font-weight-emphasis);
+		font-size: var(--wpds-typography-font-size-lg);
+	}
+
+	.note {
+		font-size: var(--wpds-typography-font-size-md);
+	}
+}

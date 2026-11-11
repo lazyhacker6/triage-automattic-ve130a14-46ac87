@@ -1,0 +1,102 @@
+/**
+ * External dependencies
+ */
+import { Icon } from '@jetpack-premium-analytics/externals';
+import { jetpack } from '@jetpack-premium-analytics/icons';
+import { useReportDateFilters } from '@jetpack-premium-analytics/routing';
+import { StatsBreadcrumbs } from '@jetpack-premium-analytics/ui';
+import {
+	ReportPageLayout,
+	ReportErrorState,
+	ReportRecordsTable,
+	ExporterCsvAction,
+	searchTermsCsvExporter,
+	type SearchTermRow,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { Page } from '@wordpress/admin-ui';
+import { useMemo } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import { route } from '../package.json';
+import reportPageStyles from '../page.module.scss';
+import { REPORTS } from '../registry';
+import { useReportParams } from '../use-report-params';
+import { getSearchTermsFields, useSearchTermsReportRecords } from './config';
+import type { JSX } from 'react';
+
+const ROUTE_FROM = route.path;
+
+/**
+ * Stable row id for the records table.
+ *
+ * @param item - The search-term row.
+ * @return The row id.
+ */
+function getSearchTermRowId( item: SearchTermRow ): string {
+	return item.id;
+}
+
+const RECORDS_VIEW = {
+	sort: { field: 'views', direction: 'desc' as const },
+	layout: {
+		styles: {
+			term: { width: '100%' },
+			views: { align: 'end' as const },
+		},
+	},
+};
+
+/**
+ * Premium Analytics Search terms report page.
+ *
+ * @return The report page.
+ */
+export default function SearchTermsReportPage(): JSX.Element {
+	const reportParams = useReportParams();
+	const records = useSearchTermsReportRecords( reportParams );
+	const fields = useMemo(
+		() => getSearchTermsFields( records.table.hasComparison ),
+		[ records.table.hasComparison ]
+	);
+	const dateFilters = useReportDateFilters( ROUTE_FROM );
+
+	const { getLabel } = REPORTS[ 'search-terms' ];
+
+	return (
+		<Page
+			className={ reportPageStyles.page }
+			visual={ <Icon icon={ jetpack } /> }
+			breadcrumbs={ <StatsBreadcrumbs items={ [ { label: getLabel() } ] } /> }
+			actions={
+				<ExporterCsvAction
+					exporter={ searchTermsCsvExporter }
+					items={ records.table.rows }
+					status={ records.table }
+					reportParams={ reportParams }
+				/>
+			}
+		>
+			<ReportPageLayout title={ getLabel() } dateFilters={ dateFilters } withAllTime>
+				<ReportErrorState
+					status={ records }
+					retryDescription={ __(
+						"We couldn't load search terms. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					) }
+				>
+					<ReportRecordsTable< SearchTermRow >
+						data={ records.table.rows }
+						fields={ fields }
+						getItemId={ getSearchTermRowId }
+						isLoading={ records.table.isLoading }
+						isFetching={ records.table.isFetching }
+						initialView={ RECORDS_VIEW }
+						searchLabel={ __( 'Search terms', 'jetpack-premium-analytics-pkg' ) }
+					/>
+				</ReportErrorState>
+			</ReportPageLayout>
+		</Page>
+	);
+}

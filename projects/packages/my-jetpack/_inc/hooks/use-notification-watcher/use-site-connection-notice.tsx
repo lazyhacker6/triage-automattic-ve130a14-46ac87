@@ -1,0 +1,156 @@
+import { Col, TermsOfService, Text } from '@automattic/jetpack-components';
+import { CONNECTION_FROM } from '@automattic/jetpack-connection';
+import { __, sprintf } from '@wordpress/i18n';
+import { useContext, useEffect, useMemo } from 'react';
+import { NOTICE_PRIORITY_HIGH } from '../../context/constants';
+import { NoticeContext } from '../../context/notices/noticeContext';
+import { useAllProducts } from '../../data/products/use-all-products';
+import useProductsByOwnership from '../../data/products/use-products-by-ownership';
+import getProductSlugsThatRequireUserConnection from '../../data/utils/get-product-slugs-that-require-user-connection';
+import { getConnectUrl } from '../../utils/connect-url';
+import { leavePageFor } from '../../utils/reload-page';
+import useAnalytics from '../use-analytics';
+import useConnectSite from '../use-connect-site';
+import useMyJetpackConnection from '../use-my-jetpack-connection';
+import type { NoticeHookType } from './types';
+import type { NoticeOptions } from '../../context/notices/types';
+import type { MouseEvent } from 'react';
+
+const useSiteConnectionNotice: NoticeHookType = ( redBubbleAlerts, isLoading ) => {
+	const { recordEvent } = useAnalytics();
+	const { setNotice, resetNotice } = useContext( NoticeContext );
+	const { siteIsRegistering, isSiteConnected } = useMyJetpackConnection( {
+		skipUserConnection: true,
+	} );
+	const { data: products, isLoading: isAllProductsLoading, isError } = useAllProducts();
+	const redBubbleSlug = 'missing-connection';
+	const connectionError = redBubbleAlerts?.[ redBubbleSlug ];
+	// An older shared jetpack-connection script may lack CONNECTION_FROM: use the `my-jetpack` its links send.
+	const userFrom = CONNECTION_FROM?.myJetpackNoticeUser ?? 'my-jetpack';
+	const siteFrom = CONNECTION_FROM?.myJetpackNoticeSite ?? 'my-jetpack';
+	const { connectSite } = useConnectSite( {
+		tracksInfo: {
+			event: 'jetpack_my_jetpack_site_connection_notice_cta',
+			properties: { from: siteFrom },
+		},
+		from: siteFrom,
+	} );
+
+	const { refetch: refetchOwnershipData } = useProductsByOwnership();
+
+	const productSlugsThatRequireUserConnection = useMemo( () => {
+		if ( isLoading || isAllProductsLoading || isError ) {
+			return [];
+		}
+		return getProductSlugsThatRequireUserConnection( products );
+	}, [ isLoading, isError, isAllProductsLoading, products ] );
+
+	useEffect( () => {
+		if ( ! connectionError ) {
+			return;
+		}
+
+		const requiresUserConnection = connectionError.type === 'user';
+
+		const onActionButtonClick = ( e: MouseEvent< HTMLButtonElement > ) => {
+			if ( requiresUserConnection ) {
+				recordEvent( 'jetpack_my_jetpack_user_connection_notice_cta_click', { from: userFrom } );
+				leavePageFor( getConnectUrl( userFrom ) );
+			} else {
+				connectSite( e );
+			}
+		};
+
+		const oneProductMessage = sprintf(
+			/* translators: %s: the product name. */
+			__(
+				'Jetpack %s needs a user connection to WordPress.com to be able to work.',
+				'jetpack-my-jetpack'
+			),
+			productSlugsThatRequireUserConnection[ 0 ]
+		);
+
+		const userConnectionContent = {
+			message:
+				productSlugsThatRequireUserConnection.length === 1
+					? oneProductMessage
+					: __(
+							'Some products need a user connection to WordPress.com to be able to work.',
+							'jetpack-my-jetpack'
+						),
+			buttonLabel: __( 'Connect your user account', 'jetpack-my-jetpack' ),
+			title: __( 'Missing user connection', 'jetpack-my-jetpack' ),
+		};
+
+		const siteConnectionContent = {
+			message: __(
+				'Some products need a connection to WordPress.com to be able to work.',
+				'jetpack-my-jetpack'
+			),
+			buttonLabel: __( 'Connect your site', 'jetpack-my-jetpack' ),
+			title: __( 'Missing site connection', 'jetpack-my-jetpack' ),
+		};
+
+		// A missing user connection limits features but isn't a connection error.
+		let level: NoticeOptions[ 'level' ] = connectionError.is_error ? 'error' : 'info';
+		if ( requiresUserConnection ) {
+			level = 'warning';
+		}
+
+		const noticeOptions: NoticeOptions = {
+			id: redBubbleSlug,
+			level,
+			actions: [
+				{
+					label: requiresUserConnection
+						? userConnectionContent.buttonLabel
+						: siteConnectionContent.buttonLabel,
+					isLoading: siteIsRegistering,
+					loadingText: __( 'Connecting…', 'jetpack-my-jetpack' ),
+					onClick: onActionButtonClick,
+					noDefaultClasses: true,
+				},
+			],
+			// If this notice gets into a loading state, we want to show it above the rest
+			priority: NOTICE_PRIORITY_HIGH + ( siteIsRegistering ? 1 : 0 ),
+			isRedBubble: true,
+			tracksArgs: {
+				type: connectionError.type,
+				is_error: connectionError.is_error,
+			},
+		};
+
+		const messageContent = requiresUserConnection ? (
+			userConnectionContent.message
+		) : (
+			<Col>
+				<Text mb={ 2 }>{ siteConnectionContent.message }</Text>
+				<TermsOfService agreeButtonLabel={ siteConnectionContent.buttonLabel } />
+			</Col>
+		);
+
+		if ( ! isLoading ) {
+			setNotice( {
+				message: messageContent,
+				title: requiresUserConnection ? userConnectionContent.title : siteConnectionContent.title,
+				options: noticeOptions,
+			} );
+		}
+	}, [
+		isSiteConnected,
+		connectSite,
+		products,
+		recordEvent,
+		redBubbleAlerts,
+		resetNotice,
+		setNotice,
+		siteIsRegistering,
+		connectionError,
+		refetchOwnershipData,
+		productSlugsThatRequireUserConnection,
+		isLoading,
+		userFrom,
+	] );
+};
+
+export default useSiteConnectionNotice;

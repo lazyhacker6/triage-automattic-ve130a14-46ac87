@@ -1,0 +1,176 @@
+import AdminPage from '@automattic/jetpack-components/admin-page';
+import Button from '@automattic/jetpack-components/button';
+import PricingTable, {
+	PricingTableColumn,
+	PricingTableHeader,
+	PricingTableItem,
+} from '@automattic/jetpack-components/pricing-table';
+import ProductPrice from '@automattic/jetpack-components/product-price';
+import { getRegistrationErrorSummary } from '@automattic/jetpack-connection/connection-error-message';
+import useConnection from '@automattic/jetpack-connection/use-connection';
+import { useDispatch } from '@wordpress/data';
+import { __, sprintf } from '@wordpress/i18n';
+import { store as noticesStore } from '@wordpress/notices';
+import { Notice } from '@wordpress/ui';
+import { useEffect, useRef, useState } from 'react';
+import useVideoPressCheckout from '../../../client/hooks/use-videopress-checkout';
+import { useUpsellImpression } from '../../hooks/use-upsell-impression';
+import { recordVideoPressUpgradeClick } from '../../hooks/use-videopress-upgrade';
+import { VIDEOPRESS_ADMIN_PAGE } from '../../utils/constants';
+import PageSubTitle from '../page-subtitle';
+import './style.scss';
+
+/**
+ * Pre-connection upsell shown when the site isn't registered yet. A port of the
+ * legacy dashboard's pricing table (`PricingSection`): the paid column drives
+ * `useVideoPressCheckout` (Get VideoPress), the free column registers the
+ * site and connects the user via `useConnection` (Start for free). Reads the
+ * product/price payload from `JPVIDEOPRESS_INITIAL_STATE.pricing`, which the
+ * server only populates for disconnected sites.
+ *
+ * Returns null when the pricing payload is absent (e.g. the WPCOM price request
+ * failed); the gate renders the plain connect screen in that case.
+ *
+ * @return The pricing table element, or null when pricing data is unavailable.
+ */
+export default function PricingUpsell() {
+	const state =
+		typeof JPVIDEOPRESS_INITIAL_STATE !== 'undefined' ? JPVIDEOPRESS_INITIAL_STATE : undefined;
+	const pricing = state?.pricing;
+	const siteSuffix = state?.jetpackStatus?.calypsoSlug ?? '';
+	const redirectUrl = VIDEOPRESS_ADMIN_PAGE;
+	// eslint-disable-next-line @wordpress/no-unused-vars-before-return -- Hooks must run before the missing-pricing guard.
+	const impressionRef = useUpsellImpression< HTMLButtonElement >( 'pricing_upsell' );
+
+	// These hooks must run unconditionally (Rules of Hooks) and therefore precede
+	// the `! pricing` guard below, which the gate already makes unreachable in
+	// practice — so the assignments are never actually wasted.
+	// eslint-disable-next-line @wordpress/no-unused-vars-before-return
+	const [ isConnecting, setIsConnecting ] = useState( false );
+
+	const { handleRegisterSite, userIsConnecting, registrationError, isOfflineMode } = useConnection(
+		{
+			from: 'jetpack-videopress',
+			redirectUri: redirectUrl,
+		}
+	);
+
+	const { run, hasCheckoutStarted, checkoutError } = useVideoPressCheckout( {
+		productSlug: pricing?.yearly?.slug ?? '',
+		redirectUrl,
+		siteSuffix,
+		useBlogIdSuffix: true,
+		from: 'jetpack-videopress',
+	} );
+
+	const { createErrorNotice } = useDispatch( noticesStore );
+	useEffect( () => {
+		if ( checkoutError ) {
+			createErrorNotice(
+				__( 'Checkout could not start. Please try again.', 'jetpack-videopress-pkg' ),
+				{
+					type: 'snackbar',
+				}
+			);
+		}
+	}, [ checkoutError, createErrorNotice ] );
+
+	// Below the large breakpoint the table stacks, so the notice can be off screen.
+	const noticeRef = useRef< HTMLDivElement >( null );
+	useEffect( () => {
+		if ( registrationError ) {
+			noticeRef.current?.scrollIntoView?.( { block: 'nearest' } );
+		}
+	}, [ registrationError ] );
+
+	if ( ! pricing ) {
+		return null;
+	}
+
+	const { title, features, yearly } = pricing;
+	const pricingItems = features.map( feature => ( { name: feature } ) );
+
+	return (
+		<AdminPage
+			title={ 'VideoPress' /* product name; not translated */ }
+			subTitle={ <PageSubTitle /> }
+		>
+			<div className="vp-connection-gate__upsell">
+				{ registrationError && (
+					<Notice.Root
+						ref={ noticeRef }
+						intent="error"
+						role="alert"
+						className="vp-connection-gate__notice"
+					>
+						<Notice.Description>
+							{ getRegistrationErrorSummary( registrationError, isOfflineMode ) ||
+								__( 'An error occurred. Please try again.', 'jetpack-videopress-pkg' ) }
+						</Notice.Description>
+					</Notice.Root>
+				) }
+				<PricingTable title={ title } items={ pricingItems }>
+					<PricingTableColumn primary>
+						<PricingTableHeader>
+							<ProductPrice
+								offPrice={ yearly.discount ? yearly.salePriceByMonth : undefined }
+								price={ yearly.priceByMonth }
+								promoLabel={
+									yearly.discount
+										? sprintf(
+												/* translators: %1$s: the discount amount */
+												__( '%1$s%% off', 'jetpack-videopress-pkg' ),
+												String( yearly.discount )
+											)
+										: undefined
+								}
+								legend={ __( '/month, billed yearly', 'jetpack-videopress-pkg' ) }
+								currency={ yearly.currency }
+							/>
+							<Button
+								ref={ impressionRef }
+								onClick={ () => {
+									recordVideoPressUpgradeClick( 'pricing_upsell' );
+									run();
+								} }
+								isLoading={ hasCheckoutStarted }
+								fullWidth
+								disabled={ isConnecting || hasCheckoutStarted || userIsConnecting }
+							>
+								{ __( 'Get VideoPress', 'jetpack-videopress-pkg' ) }
+							</Button>
+						</PricingTableHeader>
+						<PricingTableItem isIncluded />
+						<PricingTableItem isIncluded />
+						<PricingTableItem isIncluded />
+						<PricingTableItem isIncluded />
+					</PricingTableColumn>
+					<PricingTableColumn>
+						<PricingTableHeader>
+							<ProductPrice price={ 0 } legend="" currency={ yearly.currency } hidePriceFraction />
+							<Button
+								fullWidth
+								variant="secondary"
+								onClick={ () => {
+									setIsConnecting( true );
+									handleRegisterSite().catch( () => setIsConnecting( false ) );
+								} }
+								isLoading={ userIsConnecting || isConnecting }
+								disabled={ userIsConnecting || isConnecting || hasCheckoutStarted }
+							>
+								{ __( 'Start for free', 'jetpack-videopress-pkg' ) }
+							</Button>
+						</PricingTableHeader>
+						<PricingTableItem
+							isIncluded={ false }
+							label={ <strong>{ __( 'Upload one video', 'jetpack-videopress-pkg' ) }</strong> }
+						/>
+						<PricingTableItem isIncluded />
+						<PricingTableItem isIncluded={ false } />
+						<PricingTableItem isIncluded={ false } />
+					</PricingTableColumn>
+				</PricingTable>
+			</div>
+		</AdminPage>
+	);
+}

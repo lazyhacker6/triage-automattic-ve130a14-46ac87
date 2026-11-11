@@ -1,0 +1,126 @@
+/**
+ * External dependencies
+ */
+import { Stack } from '@jetpack-premium-analytics/externals';
+import { ComponentProps } from 'react';
+/**
+ * Internal dependencies
+ */
+import { MetricDelta } from '../metric-delta';
+import { MetricValue } from '../metric-value';
+import type { DataFormat } from '../../types';
+import type { MetricValueProps } from '../metric-value';
+
+export type MetricWithComparisonProps = {
+	value: number;
+
+	/**
+	 * The previous value for comparison. If null/undefined, delta won't be shown.
+	 */
+	previousValue?: number | null;
+
+	/**
+	 * Format configuration for value and delta display
+	 * @default { type: 'number' }
+	 */
+	dataFormat?: DataFormat;
+
+	/**
+	 * Layout direction
+	 * @default 'row'
+	 */
+	direction?: ComponentProps< typeof Stack >[ 'direction' ];
+
+	/**
+	 * Alignment of items
+	 * @default 'baseline'
+	 */
+	align?: ComponentProps< typeof Stack >[ 'align' ];
+
+	/**
+	 * Whether the delta wraps under the value where the row runs out of room
+	 * @default 'nowrap'
+	 */
+	wrap?: ComponentProps< typeof Stack >[ 'wrap' ];
+
+	/**
+	 * Font size token for the primary value
+	 * @default 'xl'
+	 */
+	fontSize?: MetricValueProps[ 'fontSize' ];
+
+	/**
+	 * For metrics where decrease is improvement (e.g., bounce rate)
+	 * @default false
+	 */
+	invertDeltaColors?: boolean;
+
+	/**
+	 * Hide delta when it's zero
+	 * @default false
+	 */
+	hideDeltaOnZero?: boolean;
+
+	className?: string;
+
+	/** The element the metric and its delta render as, for a spot that allows phrasing content only, such as a button. */
+	render?: ComponentProps< typeof Stack >[ 'render' ];
+
+	/**
+	 * What to display for delta when calculation is not possible
+	 */
+	deltaFallback?: string;
+
+	/**
+	 * Show absolute change instead of percentage in delta
+	 * @default false
+	 */
+	showAbsoluteDelta?: boolean;
+};
+
+export function MetricWithComparison( {
+	value,
+	previousValue,
+	dataFormat = { type: 'number' },
+	direction = 'row',
+	align = 'baseline',
+	wrap,
+	fontSize = 'xl',
+	invertDeltaColors = false,
+	hideDeltaOnZero = false,
+	className,
+	render,
+	deltaFallback,
+	showAbsoluteDelta = false,
+}: MetricWithComparisonProps ) {
+	const showDelta = previousValue !== null && previousValue !== undefined;
+
+	const absoluteFormat = dataFormat.type === 'currency' ? 'currency' : 'number';
+
+	return (
+		<Stack
+			render={ render }
+			className={ className }
+			direction={ direction }
+			align={ align }
+			wrap={ wrap }
+			gap="xs"
+		>
+			<MetricValue value={ value } dataFormat={ dataFormat } fontSize={ fontSize } />
+
+			{ showDelta && (
+				<MetricDelta
+					render={ render }
+					current={ value }
+					previous={ previousValue }
+					invertColors={ invertDeltaColors }
+					hideZero={ hideDeltaOnZero }
+					fallback={ deltaFallback }
+					showAbsolute={ showAbsoluteDelta }
+					absoluteFormat={ absoluteFormat }
+					currencyCode={ dataFormat.options?.currencyCode }
+				/>
+			) }
+		</Stack>
+	);
+}

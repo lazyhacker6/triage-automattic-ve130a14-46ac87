@@ -1,0 +1,84 @@
+import { viewsByEuropeanCountry, viewsByUSState } from '../../../stories/sample-data';
+import GeoChart from '../geo-chart';
+import { geoChartMetaArgs, geoChartStoryArgs } from './config';
+import type { Meta, StoryObj } from '@storybook/react';
+
+const meta: Meta< typeof GeoChart > = {
+	...geoChartMetaArgs,
+	title: 'JS Packages/Charts Library/Charts/Geo Chart',
+	component: GeoChart,
+};
+
+export default meta;
+type Story = StoryObj< typeof GeoChart >;
+
+export const Default: Story = {
+	args: {
+		...geoChartStoryArgs,
+	},
+};
+
+export const FixedDimensions: Story = {
+	args: {
+		...Default.args,
+		width: 600,
+		height: 300,
+	},
+};
+
+export const AspectRatio: Story = {
+	args: {
+		...Default.args,
+		aspectRatio: 0.5,
+	},
+};
+
+export const SingleCountry: Story = {
+	args: {
+		...Default.args,
+		data: [
+			[ 'Country', 'Views' ],
+			[ 'United States', 1500 ],
+		],
+	},
+};
+
+export const EmptyData: Story = {
+	args: {
+		...Default.args,
+		data: [ [ 'Country', 'Views' ] ],
+	},
+};
+
+export const USStates: Story = {
+	args: {
+		...Default.args,
+		region: 'US',
+		resolution: 'provinces',
+		data: viewsByUSState,
+	},
+};
+
+export const EuropeanCountries: Story = {
+	args: {
+		...Default.args,
+		region: '150',
+		resolution: 'countries',
+		data: viewsByEuropeanCountry,
+	},
+};
+
+export const CityMarkers: Story = {
+	args: {
+		...Default.args,
+		displayMode: 'markers',
+		data: [
+			[ 'Latitude', 'Longitude', 'City', 'Views' ],
+			[ 18.5204, 73.8567, 'Pune', 5650 ],
+			[ 40.7128, -74.006, 'New York', 2400 ],
+			[ 51.5074, -0.1278, 'London', 1200 ],
+			[ -33.8688, 151.2093, 'Sydney', 480 ],
+			[ -23.5505, -46.6333, 'São Paulo', 150 ],
+		],
+	},
+};

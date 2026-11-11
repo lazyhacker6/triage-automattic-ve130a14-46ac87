@@ -1,0 +1,189 @@
+import { __ } from '@wordpress/i18n';
+import { Component } from 'react';
+import { connect } from 'react-redux';
+import QueryAkismetKeyCheck from 'components/data/query-akismet-key-check';
+import QuerySite from 'components/data/query-site';
+import SimpleNotice from 'components/notice';
+import NoticeAction from 'components/notice/notice-action';
+import { getVaultPressData } from 'state/at-a-glance';
+import { isOfflineMode, isUnavailableInOfflineMode, hasConnectedOwner } from 'state/connection';
+import { getSiteId, hasBackupPage } from 'state/initial-state';
+import { getModule, hasProtectPage } from 'state/modules';
+import { isModuleFound } from 'state/search';
+import { getSettings } from 'state/settings';
+import { siteHasFeature } from 'state/site';
+import { isPluginActive, isPluginInstalled } from 'state/site/plugins';
+import { AccountProtection } from './account-protection';
+import AllowList from './allowList';
+import Antispam from './antispam';
+import BackupsScan from './backups-scan';
+import { JetpackBackup } from './jetpack-backup';
+import { Monitor } from './monitor';
+import { MovedSettings } from './moved-settings';
+import { Protect } from './protect';
+import {
+	BACKUP_MODULES,
+	PROTECT_PAGE_MODULES,
+	getProtectPluginUrl,
+	isProtectPluginActive,
+} from './protect-page';
+import { SSO } from './sso';
+import Waf from './waf';
+
+export class Security extends Component {
+	static displayName = 'SecuritySettings';
+
+	/**
+	 * Check if Akismet plugin is being searched and matched.
+	 *
+	 * @return {boolean} False if the plugin is inactive or if the search doesn't match it. True otherwise.
+	 */
+	isAkismetFound = () => {
+		if ( ! this.props.isPluginActive( 'akismet/akismet.php' ) ) {
+			return false;
+		}
+
+		if ( this.props.searchTerm ) {
+			const akismetData = this.props.isPluginInstalled( 'akismet/akismet.php' );
+			return (
+				[
+					'akismet',
+					'antispam',
+					'spam',
+					'comments',
+					akismetData.Description,
+					akismetData.PluginURI,
+				]
+					.join( ' ' )
+					.toLowerCase()
+					.indexOf( this.props.searchTerm.toLowerCase() ) > -1
+			);
+		}
+
+		return true;
+	};
+
+	render() {
+		const commonProps = {
+			settings: this.props.settings,
+			getModule: this.props.module,
+			isOfflineMode: this.props.isOfflineMode,
+			isUnavailableInOfflineMode: this.props.isUnavailableInOfflineMode,
+			rewindStatus: this.props.rewindStatus,
+			siteRawUrl: this.props.siteRawUrl,
+			blogID: this.props.blogID,
+			hasConnectedOwner: this.props.hasConnectedOwner,
+		};
+
+		const isSearchTerm = this.props.searchTerm;
+
+		if ( ! isSearchTerm && ! this.props.active ) {
+			return null;
+		}
+
+		if ( this.props.hasProtectPage ) {
+			if ( ! isSearchTerm ) {
+				return null;
+			}
+			const showProtect = PROTECT_PAGE_MODULES.some( this.props.isModuleFound ),
+				showBackup = BACKUP_MODULES.some( this.props.isModuleFound ),
+				showAntispam = this.isAkismetFound();
+
+			return showProtect || showBackup || showAntispam ? (
+				<MovedSettings
+					siteAdminUrl={ this.props.siteAdminUrl }
+					showProtect={ showProtect }
+					showBackup={ showBackup }
+					hasBackupPage={ this.props.hasBackupPage }
+					showAntispam={ showAntispam }
+				/>
+			) : null;
+		}
+
+		const foundProtect = this.props.isModuleFound( 'protect' ),
+			foundAccountProtection = this.props.isModuleFound( 'account-protection' ),
+			foundSso = this.props.isModuleFound( 'sso' ),
+			foundAkismet = this.isAkismetFound(),
+			rewindActive = ! isSearchTerm && 'active' === this.props.rewindStatus?.state,
+			foundBackups = this.props.isModuleFound( 'vaultpress' ) || rewindActive,
+			foundMonitor = this.props.isModuleFound( 'monitor' );
+
+		if (
+			! foundSso &&
+			! foundProtect &&
+			! foundAccountProtection &&
+			! foundAkismet &&
+			! foundBackups &&
+			! foundMonitor
+		) {
+			return null;
+		}
+
+		const foundWaf = this.props.isModuleFound( 'waf' );
+
+		const backupsContent = this.props.backupsOnly ? (
+			<JetpackBackup { ...commonProps } vaultPressData={ this.props.vaultPressData } />
+		) : (
+			<BackupsScan { ...commonProps } />
+		);
+
+		return (
+			<div>
+				<QuerySite />
+				<h1 className="screen-reader-text">{ __( 'Security settings', 'jetpack' ) }</h1>
+				{ isSearchTerm && (
+					<h2 className="jp-settings__section-title">{ __( 'Security', 'jetpack' ) }</h2>
+				) }
+				{ ! isSearchTerm && this.props.isProtectPluginActive && (
+					<SimpleNotice
+						className="jp-security__protect-plugin-notice"
+						status="is-info"
+						showDismiss={ false }
+						text={ __(
+							"Jetpack's Protect page is off while the Jetpack Protect plugin is active. Scans and firewall settings are on that plugin's Protect page; the settings below still apply here.",
+							'jetpack'
+						) }
+					>
+						<NoticeAction href={ getProtectPluginUrl( this.props.siteAdminUrl ) }>
+							{ __( 'Open Protect', 'jetpack' ) }
+						</NoticeAction>
+					</SimpleNotice>
+				) }
+				{ foundBackups && backupsContent }
+				{ foundMonitor && <Monitor { ...commonProps } /> }
+				{ foundAkismet && (
+					<>
+						<Antispam { ...commonProps } />
+						<QueryAkismetKeyCheck />
+					</>
+				) }
+				{ foundAccountProtection && (
+					<AccountProtection isModuleFound={ this.props.isModuleFound } { ...commonProps } />
+				) }
+				{ foundWaf && <Waf { ...commonProps } /> }
+				{ foundProtect && <Protect { ...commonProps } /> }
+				{ ( foundWaf || foundProtect ) && <AllowList { ...commonProps } /> }
+				{ foundSso && <SSO { ...commonProps } /> }
+			</div>
+		);
+	}
+}
+
+export default connect( state => {
+	return {
+		backupsOnly: siteHasFeature( state, 'backups' ) && ! siteHasFeature( state, 'scan' ),
+		module: module_name => getModule( state, module_name ),
+		settings: getSettings( state ),
+		isOfflineMode: isOfflineMode( state ),
+		isUnavailableInOfflineMode: module_name => isUnavailableInOfflineMode( state, module_name ),
+		isModuleFound: module_name => isModuleFound( state, module_name ),
+		isPluginActive: plugin_slug => isPluginActive( state, plugin_slug ),
+		isPluginInstalled: plugin_slug => isPluginInstalled( state, plugin_slug ),
+		isProtectPluginActive: isProtectPluginActive( state ),
+		vaultPressData: getVaultPressData( state ),
+		hasConnectedOwner: hasConnectedOwner( state ),
+		blogID: getSiteId( state ),
+		hasProtectPage: hasProtectPage( state ),
+		hasBackupPage: hasBackupPage( state ),
+	};
+} )( Security );

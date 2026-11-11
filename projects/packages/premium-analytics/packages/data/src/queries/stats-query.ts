@@ -1,0 +1,237 @@
+import {
+	fetchStatsProxy,
+	type StatsProxyMethod,
+	type StatsProxyParams,
+	type StatsProxyVersion,
+} from '../api';
+import {
+	sanitizeStatsClicksResponse,
+	sanitizeStatsDevicesResponse,
+	sanitizeStatsFileDownloadsResponse,
+	sanitizeStatsHighlightsResponse,
+	sanitizeStatsLocationsResponse,
+	sanitizeStatsArchivesResponse,
+	sanitizeStatsAuthorResponse,
+	sanitizeStatsCommentFollowersResponse,
+	sanitizeStatsFollowersResponse,
+	sanitizeStatsCommentsResponse,
+	sanitizeStatsHourOfDayResponse,
+	sanitizeStatsInsightsResponse,
+	sanitizeStatsStreakResponse,
+	sanitizeStatsVisitsResponse,
+	sanitizeStatsTagsResponse,
+	sanitizeStatsTimeSeriesResponse,
+	sanitizeStatsEmailTimeSeriesResponse,
+	sanitizeStatsEmailBreakdownResponse,
+	sanitizeStatsEmailSummaryResponse,
+	sanitizeStatsPassthroughResponse,
+	sanitizeStatsPostCommentsResponse,
+	sanitizeStatsPostLikesResponse,
+	sanitizeStatsPostResponse,
+	sanitizeStatsReferrersResponse,
+	sanitizeStatsSearchTermsResponse,
+	sanitizeStatsSingleVideoResponse,
+	sanitizeStatsSiteResponse,
+	sanitizeStatsSubscribersCountsResponse,
+	sanitizeStatsSubscribersResponse,
+	sanitizeStatsSummaryResponse,
+	sanitizeStatsTopAuthorsResponse,
+	sanitizeStatsTopPostsResponse,
+	sanitizeStatsUtmResponse,
+	sanitizeStatsVideoPlaysResponse,
+	sanitizeStatsWordAdsEarningsResponse,
+	sanitizeStatsWordAdsStatsResponse,
+} from '../processing/stats';
+import { getStatsRefetchInterval } from '../utils/refetch-interval';
+import { resolveReportTimeZone } from '../utils/report-timezone';
+import {
+	isAllTimeNum,
+	reportParamsToStatsQueryParams,
+	statsQueryParamsToApiParams,
+	type StatsQueryParams,
+	type StatsQueryParamFields,
+	type StatsSanitizerParams,
+} from '../utils/stats-params';
+import type { ReportParams } from '../utils/search';
+import type { UseQueryOptions } from '@tanstack/react-query';
+
+// `StatsProxyParams` is deliberately left out: its string index signature conflicts
+// with `ReportParams.filters`. Extras reach the proxy through `extraParams` instead.
+export type StatsReportParams = ReportParams & StatsQueryParamFields;
+type StatsSanitizer< TData = unknown > = (
+	response: unknown,
+	params: StatsSanitizerParams
+) => TData;
+
+type StatsReportQuerySettings = {
+	/**
+	 * Query params derived from the shared report range that this endpoint does not accept.
+	 * WPCOM drops params an endpoint does not declare, so this changes nothing server-side —
+	 * it only keeps the request URL and the proxy cache key honest.
+	 */
+	omitParams?: readonly ( keyof StatsQueryParamFields )[];
+};
+
+const statsSanitizers = {
+	passthrough: sanitizeStatsPassthroughResponse,
+	author: sanitizeStatsAuthorResponse,
+	post: sanitizeStatsPostResponse,
+	postComments: sanitizeStatsPostCommentsResponse,
+	postLikes: sanitizeStatsPostLikesResponse,
+	site: sanitizeStatsSiteResponse,
+	topPosts: sanitizeStatsTopPostsResponse,
+	referrers: sanitizeStatsReferrersResponse,
+	clicks: sanitizeStatsClicksResponse,
+	searchTerms: sanitizeStatsSearchTermsResponse,
+	fileDownloads: sanitizeStatsFileDownloadsResponse,
+	highlights: sanitizeStatsHighlightsResponse,
+	topAuthors: sanitizeStatsTopAuthorsResponse,
+	locations: sanitizeStatsLocationsResponse,
+	videoPlays: sanitizeStatsVideoPlaysResponse,
+	archives: sanitizeStatsArchivesResponse,
+	commentFollowers: sanitizeStatsCommentFollowersResponse,
+	followers: sanitizeStatsFollowersResponse,
+	comments: sanitizeStatsCommentsResponse,
+	devices: sanitizeStatsDevicesResponse,
+	insights: sanitizeStatsInsightsResponse,
+	streak: sanitizeStatsStreakResponse,
+	tags: sanitizeStatsTagsResponse,
+	utm: sanitizeStatsUtmResponse,
+	visits: sanitizeStatsVisitsResponse,
+	hourOfDay: sanitizeStatsHourOfDayResponse,
+	timeSeries: sanitizeStatsTimeSeriesResponse,
+	emailTimeSeries: sanitizeStatsEmailTimeSeriesResponse,
+	subscribers: sanitizeStatsSubscribersResponse,
+	subscribersCounts: sanitizeStatsSubscribersCountsResponse,
+	wordAdsStats: sanitizeStatsWordAdsStatsResponse,
+	wordAdsEarnings: sanitizeStatsWordAdsEarningsResponse,
+	emailBreakdown: sanitizeStatsEmailBreakdownResponse,
+	emailSummary: sanitizeStatsEmailSummaryResponse,
+	singleVideo: sanitizeStatsSingleVideoResponse,
+	summary: sanitizeStatsSummaryResponse,
+} satisfies Record< string, StatsSanitizer >;
+
+export type StatsSanitizerKey = keyof typeof statsSanitizers;
+type StatsSanitizerData< TSanitizer extends StatsSanitizerKey = StatsSanitizerKey > = ReturnType<
+	( typeof statsSanitizers )[ TSanitizer ]
+>;
+export type StatsReportQueryOptions< TSanitizer extends StatsSanitizerKey = StatsSanitizerKey > =
+	UseQueryOptions< StatsSanitizerData< TSanitizer > >;
+
+export type StatsQueryConfig< TSanitizer extends StatsSanitizerKey = StatsSanitizerKey > = {
+	name: string;
+	version: StatsProxyVersion;
+	endpoint: string;
+	params?: StatsQueryParams;
+	method?: StatsProxyMethod;
+	body?: unknown;
+	sanitizer?: TSanitizer;
+	sanitizerParams?: StatsQueryParams;
+	enabled?: boolean;
+
+	/**
+	 * The window's end, for an endpoint whose `date` is not the end. `null` when
+	 * the request has none, which keeps the query polling.
+	 */
+	windowEnd?: string | null;
+};
+
+export function statsProxyQuery< TSanitizer extends StatsSanitizerKey >(
+	config: StatsQueryConfig< TSanitizer > & { sanitizer: TSanitizer }
+): StatsReportQueryOptions< TSanitizer >;
+export function statsProxyQuery(
+	config: StatsQueryConfig
+): StatsReportQueryOptions< 'passthrough' >;
+export function statsProxyQuery( config: StatsQueryConfig ): StatsReportQueryOptions {
+	const {
+		name,
+		version,
+		endpoint,
+		params,
+		method = 'GET',
+		body,
+		sanitizerParams,
+		enabled = true,
+	} = config;
+	const sanitizer = config.sanitizer ?? 'passthrough';
+	const apiParams = statsQueryParamsToApiParams( params );
+	const timezone = resolveReportTimeZone( params?.timezone );
+
+	return {
+		queryKey: [
+			'stats',
+			name,
+			version,
+			endpoint,
+			method,
+			apiParams,
+			body,
+			sanitizer,
+			...( sanitizerParams ? [ sanitizerParams ] : [] ),
+			timezone,
+		],
+		queryFn: async () => {
+			const response = await fetchStatsProxy( {
+				version,
+				endpoint,
+				params: apiParams,
+				method,
+				body,
+			} );
+			return statsSanitizers[ sanitizer ]( response, {
+				...apiParams,
+				...sanitizerParams,
+				timezone,
+			} );
+		},
+		enabled,
+		refetchInterval: () =>
+			getStatsRefetchInterval(
+				config.windowEnd === undefined ? apiParams.date : config.windowEnd,
+				timezone
+			),
+		placeholderData: previousData => previousData,
+	};
+}
+
+export function statsReportQuery< TSanitizer extends StatsSanitizerKey >(
+	name: string,
+	endpoint: string,
+	params: StatsReportParams,
+	sanitizer: TSanitizer,
+	version: StatsProxyVersion = '1.1',
+	// Endpoint-specific params that should reach the API but are not in the
+	// reportParamsToStatsQueryParams allow-list (e.g. filter_by_country).
+	extraParams?: StatsProxyParams,
+	settings?: StatsReportQuerySettings
+): StatsReportQueryOptions< TSanitizer > {
+	const statsParams = reportParamsToStatsQueryParams( params );
+	const reportParams = {
+		...statsParams,
+		// A leaked chart interval would make the endpoint recount the window in
+		// weeks or months instead of the requested days.
+		...( params.period === undefined ? { period: 'day' as const } : {} ),
+		...extraParams,
+		...( statsParams.summarize === undefined &&
+		( ( typeof statsParams.days === 'number' && statsParams.days > 1 ) ||
+			isAllTimeNum( statsParams.num ) )
+			? { summarize: 1 }
+			: {} ),
+	};
+	const queryParams: StatsQueryParams = { ...reportParams };
+
+	// Runs after `summarize` is derived above: that derivation reads `days`, which
+	// the list endpoints omit.
+	for ( const param of settings?.omitParams ?? [] ) {
+		delete queryParams[ param ];
+	}
+
+	return statsProxyQuery( {
+		name,
+		version,
+		endpoint,
+		params: queryParams,
+		sanitizer,
+		enabled: !! ( queryParams.end_date || queryParams.date || queryParams.start_date ),
+	} );
+}

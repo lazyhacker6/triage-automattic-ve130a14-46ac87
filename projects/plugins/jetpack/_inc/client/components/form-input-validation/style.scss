@@ -1,0 +1,27 @@
+@use "../../scss/calypso-colors";
+@use "../../scss/layout";
+
+.form-input-validation {
+	color: calypso-colors.$alert-green;
+	position: relative;
+	padding-block: 6px 11px;
+	padding-inline-start: 34px;
+	padding-inline-end: 24px;
+	border-radius: 1px;
+	box-sizing: border-box;
+	font-size: 14px;
+	animation: appear 0.3s ease-in-out;
+
+	&.is-error {
+		color: calypso-colors.$alert-red;
+	}
+
+	&.is-warning {
+		color: calypso-colors.$alert-yellow;
+	}
+
+	.gridicon {
+		float: inline-start;
+		margin-inline-start: -34px;
+	}
+}

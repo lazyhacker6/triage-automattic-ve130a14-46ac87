@@ -1,0 +1,374 @@
+import { Button, IconTooltip, getRedirectUrl } from '@automattic/jetpack-components';
+import { ToggleControl } from '@wordpress/components';
+import { createInterpolateElement } from '@wordpress/element';
+import { __, _n, sprintf } from '@wordpress/i18n';
+import { Button as UIButton, Notice, Stack, Link as WPLink } from '@wordpress/ui';
+import Lightning from '$svg/lightning';
+import styles from './meta.module.scss';
+import modernStyles from './modern-meta.module.scss';
+import { useEffect, useState } from 'react';
+import { usePageCache, useClearPageCacheAction } from '$lib/stores/page-cache';
+import clsx from 'clsx';
+import { useMutationNotice } from '$features/ui';
+import SaveButton from '$features/ui/save-button/save-button';
+import { useDataSyncSubset } from '@automattic/jetpack-react-data-sync-client';
+import { useModuleSurface, useTooltipLayer } from '$features/module/surface';
+import ErrorBoundary from '$features/error-boundary/error-boundary';
+import { recordBoostEvent } from '$lib/utils/analytics';
+import CollapsibleMeta from '$features/ui/collapsible-meta/collapsible-meta';
+import type { ChangeEvent, ReactNode } from 'react';
+
+const Meta = () => {
+	const isRow = useModuleSurface() === 'row';
+	const pageCache = usePageCache();
+
+	const [ logging, mutateLogging ] = useDataSyncSubset( pageCache, 'logging' );
+	const [ bypassPatterns, mutateBypassPatterns ] = useDataSyncSubset(
+		pageCache,
+		'bypass_patterns'
+	);
+	const [ clearedCacheMessage, runClearPageCacheAction ] = useClearPageCacheAction();
+
+	const clearPageCache = () => {
+		recordBoostEvent( 'page_cache_clear_clicked', {} );
+		runClearPageCacheAction.mutate();
+	};
+
+	const handleSeeLogsClick = () => {
+		recordBoostEvent( 'page_cache_see_logs_clicked', {} );
+		window.scrollTo( 0, 0 );
+	};
+
+	const totalBypassPatterns = bypassPatterns?.length || 0;
+
+	const getSummary = () => {
+		if ( runClearPageCacheAction.isPending ) {
+			return __( 'Clearing cache…', 'jetpack-boost' );
+		}
+
+		if ( totalBypassPatterns === 0 && ! logging ) {
+			return __( 'No exceptions.', 'jetpack-boost' ) + ' ' + __( 'No logging.', 'jetpack-boost' );
+		}
+
+		let loggingMessage;
+		if ( logging ) {
+			loggingMessage = __( 'Logging activated.', 'jetpack-boost' );
+		}
+
+		if ( ! logging ) {
+			loggingMessage = __( 'No logging.', 'jetpack-boost' );
+		}
+
+		return (
+			( totalBypassPatterns > 0
+				? sprintf(
+						/* translators: %d is the number of cache bypass patterns. */
+						_n( '%d exception.', '%d exceptions.', totalBypassPatterns, 'jetpack-boost' ),
+						totalBypassPatterns
+					)
+				: __( 'No exceptions.', 'jetpack-boost' ) ) +
+			' ' +
+			loggingMessage
+		);
+	};
+
+	const updatePatterns = ( newValue: string ) => {
+		const newPatterns = newValue.split( '\n' ).map( line => line.trim() );
+
+		recordBoostEvent( 'page_cache_bypass_patterns', {
+			total: newPatterns.length,
+		} );
+		mutateBypassPatterns.mutate( newPatterns );
+	};
+
+	const setLogging = ( value: boolean ) => {
+		recordBoostEvent( 'page_cache_toggle_logging', {} );
+		mutateLogging.mutate( value );
+	};
+
+	const toggleLogging = ( event: ChangeEvent< HTMLInputElement > ) =>
+		setLogging( event.target.checked );
+
+	const loggingEnabledMessage = __( 'Logging enabled.', 'jetpack-boost' );
+	const loggingDisabledMessage = __( 'Logging disabled.', 'jetpack-boost' );
+	useMutationNotice( 'update-bypass-patterns', mutateBypassPatterns );
+	useMutationNotice( 'update-logging', mutateLogging, {
+		successMessage: logging ? loggingEnabledMessage : loggingDisabledMessage,
+	} );
+
+	useMutationNotice( 'clear-page-cache', runClearPageCacheAction, {
+		savingMessage: __( 'Clearing cache…', 'jetpack-boost' ),
+		errorMessage: __( 'Unable to clear cache.', 'jetpack-boost' ),
+		successMessage: clearedCacheMessage || __( 'Cache cleared.', 'jetpack-boost' ),
+	} );
+
+	const extraButtons = (
+		<Button
+			variant={ isRow ? 'tertiary' : 'link' }
+			size="small"
+			weight="regular"
+			iconSize={ 16 }
+			icon={ <Lightning /> }
+			onClick={ clearPageCache }
+			disabled={ runClearPageCacheAction.isPending }
+		>
+			{ __( 'Clear Cache', 'jetpack-boost' ) }
+		</Button>
+	);
+
+	const exceptions = (
+		<BypassPatterns
+			patterns={ bypassPatterns.join( '\n' ) }
+			setPatterns={ updatePatterns }
+			showErrorNotice={ mutateBypassPatterns.isError }
+		/>
+	);
+
+	const content = (
+		<div className={ styles.body }>
+			{ exceptions }
+			<div className={ styles.section }>
+				<div className={ styles.title }>{ __( 'Logging', 'jetpack-boost' ) }</div>
+				<label htmlFor="cache-logging" className={ styles[ 'logging-toggle' ] }>
+					<input
+						type="checkbox"
+						id="cache-logging"
+						checked={ logging }
+						onChange={ toggleLogging }
+					/>{ ' ' }
+					{ __( 'Activate logging to track all your cache events.', 'jetpack-boost' ) }
+				</label>
+				{ logging && (
+					<WPLink href="#/cache-debug-log" onClick={ handleSeeLogsClick }>
+						{ __( 'See Logs', 'jetpack-boost' ) }
+					</WPLink>
+				) }
+				<div className={ styles.clearfix } />
+			</div>
+		</div>
+	);
+
+	if ( ! pageCache ) {
+		return null;
+	}
+
+	if ( isRow ) {
+		return (
+			<div className={ styles.wrapper } data-testid="page-cache-meta">
+				<div className={ modernStyles[ 'clear-cache' ] }>
+					<UIButton
+						variant="outline"
+						size="compact"
+						onClick={ clearPageCache }
+						disabled={ runClearPageCacheAction.isPending }
+						loading={ runClearPageCacheAction.isPending }
+						loadingAnnouncement={ __( 'Clearing cache…', 'jetpack-boost' ) }
+					>
+						{ __( 'Clear cache', 'jetpack-boost' ) }
+					</UIButton>
+				</div>
+				<CollapsibleMeta
+					exceptions={ bypassPatterns }
+					countExceptions
+					toggleText=""
+					tracksEvent="page_cache_exceptions_panel_toggle"
+					tracksEventProps={ { panel_scope: 'exceptions' } }
+				>
+					<div className={ styles.body }>{ exceptions }</div>
+				</CollapsibleMeta>
+				<Stack
+					direction="row"
+					justify="space-between"
+					align="flex-start"
+					gap="md"
+					className={ modernStyles.well }
+				>
+					<ToggleControl
+						label={ __( 'Enable logging', 'jetpack-boost' ) }
+						help={ __( 'Track all your cache events', 'jetpack-boost' ) }
+						checked={ logging }
+						onChange={ setLogging }
+						__nextHasNoMarginBottom
+					/>
+					{ logging && (
+						<WPLink
+							href="#/cache-debug-log"
+							onClick={ handleSeeLogsClick }
+							className={ modernStyles[ 'see-logs' ] }
+						>
+							{ __( 'See logs', 'jetpack-boost' ) }
+						</WPLink>
+					) }
+				</Stack>
+			</div>
+		);
+	}
+
+	return (
+		<div className={ styles.wrapper } data-testid="page-cache-meta">
+			<CollapsibleMeta
+				headerText={ getSummary() }
+				extraButtons={ extraButtons }
+				toggleText={ __( 'Show Options', 'jetpack-boost' ) }
+				tracksEvent={ 'page_cache_exceptions_panel_toggle' }
+				tracksEventProps={ { panel_scope: 'all_options' } }
+			>
+				{ content }
+			</CollapsibleMeta>
+		</div>
+	);
+};
+
+type BypassPatternsProps = {
+	patterns: string;
+	setPatterns: ( newValue: string ) => void;
+	showErrorNotice: boolean;
+};
+
+const BypassPatterns = ( {
+	patterns,
+	setPatterns,
+	showErrorNotice = false,
+}: BypassPatternsProps ) => {
+	const isRow = useModuleSurface() === 'row';
+	const [ inputValue, setInputValue ] = useState( patterns );
+	const [ showNotice, setShowNotice ] = useState( showErrorNotice );
+	const [ inputInvalid, setInputInvalid ] = useState( false );
+
+	const exclusionsLink = getRedirectUrl( 'jetpack-boost-cache-how-to-exclude' );
+
+	const validateInputValue = ( value: string ) => {
+		setInputValue( value );
+		setInputInvalid( ! validatePatterns( value ) );
+	};
+
+	const validatePatterns = ( value: string ) => {
+		const lines = value
+			.split( '\n' )
+			.map( line => line.trim() )
+			.filter( line => line.trim() !== '' );
+
+		// check if it's a valid regex
+		try {
+			lines.forEach( line => new RegExp( line ) );
+		} catch {
+			return false;
+		}
+
+		return true;
+	};
+
+	useEffect( () => {
+		setInputValue( patterns );
+	}, [ patterns ] );
+
+	useEffect( () => {
+		setShowNotice( showErrorNotice );
+	}, [ showErrorNotice ] );
+
+	function save() {
+		recordBoostEvent( 'page_cache_exceptions_save_clicked', {} );
+		setPatterns( inputValue );
+	}
+
+	return (
+		<div
+			data-except-content={ isRow || undefined }
+			className={ clsx( styles.section, {
+				[ styles[ 'has-error' ] ]: inputInvalid,
+			} ) }
+		>
+			{ ! isRow && <div className={ styles.title }>{ __( 'Exceptions', 'jetpack-boost' ) }</div> }
+			<label htmlFor="jb-cache-exceptions">
+				{ __( 'URLs of pages and posts that will never be cached:', 'jetpack-boost' ) }
+			</label>
+			<textarea
+				value={ inputValue }
+				rows={ 3 }
+				onChange={ e => validateInputValue( e.target.value ) }
+				id="jb-cache-exceptions"
+			/>
+			<p className={ clsx( styles.description, styles[ 'error-message' ] ) }>
+				{ __( 'Error: Invalid format', 'jetpack-boost' ) }
+			</p>
+			<div className={ styles.description }>
+				{ __(
+					'Use (.*) to address multiple URLs under a given path. Be sure each URL path is in its own line.',
+					'jetpack-boost'
+				) }
+				<br />
+				{ createInterpolateElement(
+					__( '<help>See an example</help> or <link>learn more</link>.', 'jetpack-boost' ),
+					{
+						help: <BypassPatternsExample />, // children are passed after the interpolation.
+						link: <WPLink openInNewTab href={ exclusionsLink } />,
+					}
+				) }
+			</div>
+			{ showNotice && (
+				<Notice.Root intent="error">
+					<Notice.Title>{ __( 'Error: Unable to save changes.', 'jetpack-boost' ) }</Notice.Title>
+					<Notice.Description>
+						{ __( 'An error occurred while saving changes. Please, try again.', 'jetpack-boost' ) }
+					</Notice.Description>
+					<Notice.CloseIconButton
+						onClick={ () => setShowNotice( false ) }
+						label={ __( 'Dismiss', 'jetpack-boost' ) }
+					/>
+				</Notice.Root>
+			) }
+			<SaveButton
+				disabled={ patterns === inputValue || inputInvalid }
+				onClick={ save }
+				className={ styles.button }
+			/>
+		</div>
+	);
+};
+
+type BypassPatternsExampleProps = {
+	children?: ReactNode;
+};
+
+const BypassPatternsExample = ( { children }: BypassPatternsExampleProps ) => {
+	const tooltipLayer = useTooltipLayer();
+
+	return (
+		<IconTooltip
+			trigger={ children }
+			closeOnClickOutside={ false }
+			className={ styles[ 'example-trigger' ] }
+			onTriggerClick={ () => recordBoostEvent( 'page_cache_see_example_clicked', {} ) }
+			placement="bottom-start"
+			popoverAnchorStyle="wrapper"
+			offset={ -10 }
+			popoverClassName={ styles.tooltip }
+			{ ...tooltipLayer }
+		>
+			<strong>{ __( 'Example:', 'jetpack-boost' ) }</strong>
+			<br />
+			checkout
+			<br />
+			gallery/.*
+			<br />
+			specific-page
+		</IconTooltip>
+	);
+};
+
+export default () => {
+	return (
+		<ErrorBoundary
+			fallback={ _error => (
+				<Notice.Root intent="error">
+					<Notice.Title>{ __( 'Error', 'jetpack-boost' ) }</Notice.Title>
+					<Notice.Description>
+						{ __( 'Unable to load Cache settings.', 'jetpack-boost' ) }
+					</Notice.Description>
+				</Notice.Root>
+			) }
+		>
+			<Meta />
+		</ErrorBoundary>
+	);
+};

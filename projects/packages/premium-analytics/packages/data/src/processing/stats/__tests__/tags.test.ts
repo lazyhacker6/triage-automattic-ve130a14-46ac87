@@ -1,0 +1,71 @@
+import { sanitizeStatsTagsResponse } from '..';
+import { tagsFixture } from '../__fixtures__/tags';
+
+describe( 'Stats tags normalizer', () => {
+	it( 'normalizes top-level tag rows from the Calypso payload shape', () => {
+		const result = sanitizeStatsTagsResponse( tagsFixture );
+
+		expect( result.summary ).toEqual( {} );
+		expect( result.data[ 0 ] ).toEqual(
+			expect.objectContaining( {
+				time_interval: '2026-06-22',
+				date_start: '2026-06-22T00:00:00',
+				date_end: '2026-06-22T23:59:59',
+				items: [
+					expect.objectContaining( {
+						label: [
+							{
+								label: 'News',
+								labelIcon: 'folder',
+								link: 'https://example.com/category/news/',
+							},
+						],
+						labelText: 'News',
+						value: 18,
+						link: 'https://example.com/category/news/',
+					} ),
+					expect.objectContaining( {
+						label: [
+							{
+								label: 'Announcements',
+								labelIcon: 'folder',
+								link: null,
+							},
+							{
+								label: 'Release',
+								labelIcon: 'tag',
+								link: null,
+							},
+						],
+						labelText: 'Announcements, Release',
+						value: 7,
+						link: null,
+						children: [
+							expect.objectContaining( {
+								label: 'Announcements',
+								labelIcon: 'folder',
+								value: null,
+								link: 'https://example.com/category/announcements/',
+								children: null,
+							} ),
+							expect.objectContaining( {
+								label: 'Release',
+								labelIcon: 'tag',
+								value: null,
+								link: 'https://example.com/tag/release/',
+								children: null,
+							} ),
+						],
+					} ),
+				],
+			} )
+		);
+	} );
+
+	it( 'normalizes empty responses', () => {
+		expect( sanitizeStatsTagsResponse( { tags: [] } ) ).toMatchObject( {
+			summary: {},
+			data: [],
+		} );
+	} );
+} );

@@ -1,0 +1,32 @@
+/**
+ * Editor styles for Calendly
+ */
+
+.wp-block-jetpack-calendly {
+	position: relative;
+
+	&-link-editable {
+		cursor: text;
+	}
+
+	&-embed-form-sidebar {
+		display: flex;
+		gap: 8px;
+
+		.components-base-control {
+			flex: 1;
+		}
+	}
+
+	&-learn-more {
+		margin-top: 1em;
+	}
+
+	div[data-align="center"] > & {
+		text-align: center;
+	}
+
+	.components-placeholder__fieldset input {
+		flex: 1;
+	}
+}

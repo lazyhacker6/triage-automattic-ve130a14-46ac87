@@ -1,0 +1,8 @@
+/.sass-cache/
+/.vscode/
+/logs
+/node_modules
+/vendor/
+/.cache/
+/build/
+/.claude-project/

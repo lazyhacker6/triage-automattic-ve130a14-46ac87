@@ -1,0 +1,9 @@
+/*
+ * DataViews' scoped title-link selector makes composed links blocks. Include
+ * the link's `href` attribute here to win only the layout properties while
+ * leaving its color to the report table's standard link treatment.
+ */
+span.leaf a[href] {
+	display: inline-flex;
+	align-items: center;
+}

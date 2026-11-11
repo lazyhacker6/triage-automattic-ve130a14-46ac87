@@ -1,0 +1,446 @@
+<?php
+
+namespace Automattic\Jetpack\My_Jetpack;
+
+use Automattic\Jetpack\Connection\Error_Handler;
+use Automattic\Jetpack\Connection\Manager as Connection_Manager;
+use Automattic\Jetpack\Connection\Tokens;
+use Automattic\Jetpack\Menu_Badges\Notification_Counts;
+use Automattic\Jetpack\My_Jetpack\Products\Protect;
+use Jetpack_Options;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+use WorDBless\Options as WorDBless_Options;
+use WorDBless\Users as WorDBless_Users;
+
+/**
+ * Tests that Initializer::maybe_show_red_bubble() reports alerts to the central
+ * menu-badges registry instead of writing the legacy `$menu[3]` "awaiting-mod" markup.
+ *
+ * @package automattic/my-jetpack
+ * @see \Automattic\Jetpack\My_Jetpack\Initializer::maybe_show_red_bubble
+ */
+class Red_Bubble_Menu_Badge_Test extends TestCase {
+
+	/**
+	 * The red bubble transient key, mirrored from Red_Bubble_Notifications
+	 * (private there) so tests can seed the cached-alerts code path directly.
+	 *
+	 * @var string
+	 */
+	const RED_BUBBLE_TRANSIENT_KEY = 'my-jetpack-red-bubble-transient';
+
+	/**
+	 * The admin user id.
+	 *
+	 * @var int
+	 */
+	private static $user_id;
+
+	/**
+	 * Setting up the test.
+	 */
+	public function setUp(): void {
+		parent::setUp();
+
+		Notification_Counts::reset();
+
+		global $pagenow;
+		$pagenow = 'index.php';
+		unset( $_GET['page'] );
+
+		// Mock site connection so maybe_show_red_bubble() doesn't bail out early.
+		( new Tokens() )->update_blog_token( 'test.test.1' );
+		Jetpack_Options::update_option( 'id', 123 );
+
+		self::$user_id = wp_insert_user(
+			array(
+				'user_login' => 'test_admin',
+				'user_pass'  => '123',
+				'role'       => 'administrator',
+			)
+		);
+		wp_set_current_user( self::$user_id );
+		// Connection errors are capability-gated on jetpack_connect in
+		// get_displayable_errors(); production admins have it via the meta-cap map,
+		// which isn't wired in this bootstrap, so grant it explicitly.
+		wp_get_current_user()->add_cap( 'jetpack_connect' );
+	}
+
+	/**
+	 * Returning the environment into its initial state.
+	 */
+	public function tearDown(): void {
+		Notification_Counts::reset();
+		remove_all_filters( 'jetpack_connection_bypass_error_reporting_gate' );
+		Error_Handler::get_instance()->delete_all_errors();
+		wp_set_current_user( 0 );
+
+		WorDBless_Options::init()->clear_options();
+		WorDBless_Users::init()->clear_all_users();
+
+		parent::tearDown();
+	}
+
+	/**
+	 * Seed the red-bubble transient cache the same way Red_Bubble_Notifications does,
+	 * so maybe_show_red_bubble() takes the cached (non-blocking) code path instead of
+	 * recomputing real product alerts.
+	 *
+	 * @param array $alerts Alerts keyed by slug.
+	 */
+	private function seed_cached_alerts( array $alerts ) {
+		set_transient( self::RED_BUBBLE_TRANSIENT_KEY, $alerts, 3600 );
+	}
+
+	/**
+	 * Installs and activates a mock jetpack-protect standalone plugin so
+	 * Products\Protect::is_standalone_plugin_active() reports true, mirroring the
+	 * scenario where the standalone Protect plugin registers its own count.
+	 */
+	private function activate_standalone_protect_plugin() {
+		$plugin_dir = WP_PLUGIN_DIR . '/' . Protect::$plugin_slug;
+		if ( ! file_exists( $plugin_dir ) ) {
+			mkdir( $plugin_dir, 0777, true );
+		}
+		copy( __DIR__ . '/assets/protect-mock-plugin.txt', $plugin_dir . '/jetpack-protect.php' );
+		wp_cache_delete( 'plugins', 'plugins' );
+		$plugin_file = Protect::get_installed_plugin_filename();
+		if ( $plugin_file ) {
+			activate_plugins( $plugin_file );
+		}
+	}
+
+	/**
+	 * Non-silent alerts should each register as an 'attention' entry against the
+	 * 'my-jetpack' submenu, keyed uniquely so they don't overwrite one another.
+	 */
+	public function test_registers_non_silent_alerts_as_attention_entries() {
+		$this->seed_cached_alerts(
+			array(
+				'backup_failure'           => array( 'message' => 'Backup failed' ),
+				'plan--plan_expiring_soon' => array( 'product_name' => 'Plan' ),
+				'silent-thing'             => array( 'is_silent' => true ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$entries = Notification_Counts::all();
+
+		$this->assertArrayHasKey( 'my-jetpack-backup_failure', $entries );
+		$this->assertArrayHasKey( 'my-jetpack-plan--plan_expiring_soon', $entries );
+		$this->assertArrayNotHasKey( 'my-jetpack-silent-thing', $entries, 'Silent alerts should not be registered.' );
+
+		$this->assertSame( 'my-jetpack', $entries['my-jetpack-backup_failure']['menu_slug'] );
+		$this->assertSame( 'attention', $entries['my-jetpack-backup_failure']['type'] );
+	}
+
+	/**
+	 * Protect reports its own count directly to the registry when its standalone
+	 * plugin is active (Task 8); My Jetpack must skip it in the menu-count
+	 * registration loop in that case, to avoid double-counting the top-level menu
+	 * total.
+	 */
+	public function test_skips_protect_has_threats_when_standalone_plugin_active() {
+		$this->activate_standalone_protect_plugin();
+		$this->assertTrue(
+			Protect::is_standalone_plugin_active(),
+			'Precondition: the mock standalone Protect plugin should be active.'
+		);
+
+		$this->seed_cached_alerts(
+			array(
+				'protect_has_threats' => array( 'count' => 3 ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertArrayNotHasKey( 'my-jetpack-protect_has_threats', Notification_Counts::all() );
+		$this->assertSame( 0, Notification_Counts::get_for_menu( 'my-jetpack' ) );
+	}
+
+	/**
+	 * When the standalone Protect plugin is NOT active, nothing else registers the
+	 * protect_has_threats count (class-jetpack-protect.php::admin_page_init() only
+	 * runs from the standalone plugin). My Jetpack must NOT skip it in that case,
+	 * or a security-relevant alert silently disappears from the top-level menu
+	 * total on full Jetpack + Scan installs.
+	 */
+	public function test_registers_protect_has_threats_when_standalone_plugin_inactive() {
+		$this->assertFalse(
+			Protect::is_standalone_plugin_active(),
+			'Precondition: the standalone Protect plugin should not be installed/active.'
+		);
+
+		$this->seed_cached_alerts(
+			array(
+				'protect_has_threats' => array( 'count' => 3 ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$entries = Notification_Counts::all();
+		$this->assertArrayHasKey( 'my-jetpack-protect_has_threats', $entries );
+		$this->assertSame( 'my-jetpack', $entries['my-jetpack-protect_has_threats']['menu_slug'] );
+		$this->assertSame( 'attention', $entries['my-jetpack-protect_has_threats']['type'] );
+		$this->assertSame( 1, Notification_Counts::get_for_menu( 'my-jetpack' ) );
+		$this->assertSame( 1, Notification_Counts::get_total() );
+	}
+
+	public function test_skips_protect_has_threats_when_the_protect_dashboard_is_loaded() {
+		do_action( 'jetpack_protect_dashboard_initialized' );
+		$this->seed_cached_alerts(
+			array(
+				'protect_has_threats' => array( 'count' => 3 ),
+			)
+		);
+
+		try {
+			Initializer::maybe_show_red_bubble();
+		} finally {
+			unset( $GLOBALS['wp_actions']['jetpack_protect_dashboard_initialized'] );
+		}
+
+		$this->assertArrayNotHasKey( 'my-jetpack-protect_has_threats', Notification_Counts::all() );
+	}
+
+	/**
+	 * The registered total for the my-jetpack submenu should equal the number of
+	 * non-silent alerts (each attention entry contributes 1 to the total), excluding
+	 * Protect's alert when the standalone plugin is active and reports it directly.
+	 */
+	public function test_total_reflects_non_silent_non_protect_alert_count() {
+		$this->activate_standalone_protect_plugin();
+
+		$this->seed_cached_alerts(
+			array(
+				'backup_failure'           => array( 'message' => 'Backup failed' ),
+				'protect_has_threats'      => array( 'count' => 3 ),
+				'plan--plan_expiring_soon' => array( 'product_name' => 'Plan' ),
+				'silent-thing'             => array( 'is_silent' => true ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertSame( 2, Notification_Counts::get_for_menu( 'my-jetpack' ) );
+		$this->assertSame( 2, Notification_Counts::get_total() );
+	}
+
+	/**
+	 * Users without manage_options should not have anything registered.
+	 */
+	public function test_skips_registration_for_non_admin_users() {
+		$editor_id = wp_insert_user(
+			array(
+				'user_login' => 'test_editor',
+				'user_pass'  => '123',
+				'role'       => 'editor',
+			)
+		);
+		wp_set_current_user( $editor_id );
+
+		$this->seed_cached_alerts(
+			array(
+				'backup_failure' => array( 'message' => 'Backup failed' ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertSame( array(), Notification_Counts::all() );
+	}
+
+	/**
+	 * On a cold red-bubble cache (no transient) off the My Jetpack page, the alert
+	 * data is fetched asynchronously. maybe_show_red_bubble() must still register a
+	 * hidden zero-count 'my-jetpack' placeholder so Menu_Renderer emits a badge
+	 * element the async warmer (async-notification-bubble.ts) can reveal without a
+	 * reload, and it must enqueue that warmer script.
+	 */
+	public function test_cold_cache_registers_hidden_placeholder_and_enqueues_warmer() {
+		// No transient seeded in setUp(): get_cached_alerts() returns false -> cold path.
+		Initializer::maybe_show_red_bubble();
+
+		$entries = Notification_Counts::all();
+		$this->assertArrayHasKey( 'my-jetpack', $entries );
+		$this->assertSame( 'my-jetpack', $entries['my-jetpack']['menu_slug'] );
+		$this->assertSame( 0, Notification_Counts::get_for_menu( 'my-jetpack' ) );
+		$this->assertSame( 0, Notification_Counts::get_total() );
+		$this->assertNotFalse(
+			has_action( 'admin_enqueue_scripts', array( Initializer::class, 'enqueue_red_bubble_script' ) ),
+			'The async warmer script should be enqueued on a cold cache.'
+		);
+	}
+
+	/**
+	 * Whether the Protect dashboard loaded, and the alerts the async badge must skip.
+	 *
+	 * @return array[]
+	 */
+	public static function provide_async_exclusions() {
+		return array(
+			'Protect dashboard loaded'     => array( true, '["protect_has_threats"]' ),
+			'Protect dashboard not loaded' => array( false, '[]' ),
+		);
+	}
+
+	/**
+	 * @dataProvider provide_async_exclusions
+	 *
+	 * @param bool   $loaded   Whether the Protect dashboard loaded.
+	 * @param string $excluded JSON list of the alerts the async badge must skip.
+	 */
+	#[DataProvider( 'provide_async_exclusions' )]
+	public function test_async_badge_skips_the_alerts_the_server_skips( $loaded, $excluded ) {
+		if ( $loaded ) {
+			do_action( 'jetpack_protect_dashboard_initialized' );
+		}
+
+		try {
+			Initializer::enqueue_red_bubble_script();
+		} finally {
+			unset( $GLOBALS['wp_actions']['jetpack_protect_dashboard_initialized'] );
+		}
+
+		$data = (string) wp_scripts()->get_data( 'my-jetpack-notification-bubble', 'data' );
+		wp_deregister_script( 'my-jetpack-notification-bubble' );
+		$this->assertStringContainsString( '"excludedAlerts":' . $excluded, $data );
+	}
+
+	/**
+	 * Disconnected sites should not have anything registered.
+	 */
+	public function test_skips_registration_when_disconnected() {
+		Jetpack_Options::delete_option( 'id' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		$this->seed_cached_alerts(
+			array(
+				'backup_failure' => array( 'message' => 'Backup failed' ),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertSame( array(), Notification_Counts::all() );
+	}
+
+	/**
+	 * Notification_Counts registration must happen on `admin_menu` (not `admin_init`),
+	 * and at a priority earlier than the menu-badges Menu_Renderer, which runs on
+	 * `admin_menu` at priority 100000. Getting the hook or priority wrong here is
+	 * exactly how the renderer would silently miss My Jetpack's contribution to the
+	 * top-level badge total: registering on `admin_init` runs too early (before
+	 * `admin_menu` fires at all), while a priority at or after 100000 on `admin_menu`
+	 * would run after the renderer already read the registry.
+	 */
+	public function test_registers_on_admin_menu_at_priority_30_not_admin_init() {
+		Initializer::init();
+
+		$this->assertSame(
+			30,
+			has_action( 'admin_menu', array( Initializer::class, 'maybe_show_red_bubble' ) ),
+			'maybe_show_red_bubble must be registered on admin_menu at priority 30, well before the menu-badges renderer at priority 100000.'
+		);
+		$this->assertFalse(
+			has_action( 'admin_init', array( Initializer::class, 'maybe_show_red_bubble' ) ),
+			'maybe_show_red_bubble must not be registered on admin_init.'
+		);
+	}
+
+	/**
+	 * Seeds a verified, displayable connection error via the Error Handler.
+	 */
+	private function seed_connection_error() {
+		add_filter( 'jetpack_connection_bypass_error_reporting_gate', '__return_true' );
+		Error_Handler::get_instance()->report_error(
+			Error_Handler::build_connection_wp_error(
+				'xmlrpc_request_blocked',
+				'WordPress.com requests to the site are blocked',
+				array( 'token' => '' ),
+				Error_Handler::ERROR_TYPE_LOCAL_STATE,
+				'',
+				array(
+					'user_id' => 0,
+					'action'  => 'none',
+				)
+			),
+			false,
+			true
+		);
+	}
+
+	/**
+	 * A displayable connection error registers its own attention entry.
+	 */
+	public function test_registers_connection_error_when_error_handler_reports_one() {
+		$this->seed_connection_error();
+		$this->seed_cached_alerts( array() );
+
+		Initializer::maybe_show_red_bubble();
+
+		$entries = Notification_Counts::all();
+		$this->assertArrayHasKey( 'my-jetpack-connection-error', $entries );
+		$this->assertSame( 'my-jetpack', $entries['my-jetpack-connection-error']['menu_slug'] );
+		$this->assertSame( 'attention', $entries['my-jetpack-connection-error']['type'] );
+		$this->assertSame( 1, Notification_Counts::get_for_menu( 'my-jetpack' ) );
+	}
+
+	/**
+	 * With no Error Handler error, no connection-error entry is registered.
+	 */
+	public function test_no_connection_error_entry_when_error_handler_is_empty() {
+		$this->seed_cached_alerts( array() );
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertArrayNotHasKey( 'my-jetpack-connection-error', Notification_Counts::all() );
+	}
+
+	/**
+	 * A connection error and the missing-connection slug describe the same broken
+	 * connection, so the badge counts it once: the error entry registers and the
+	 * missing-connection slug is suppressed.
+	 */
+	public function test_connection_error_suppresses_missing_connection_slug() {
+		$this->seed_connection_error();
+		$this->seed_cached_alerts(
+			array(
+				'missing-connection' => array(
+					'type'     => 'user',
+					'is_error' => true,
+				),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$entries = Notification_Counts::all();
+		$this->assertArrayHasKey( 'my-jetpack-connection-error', $entries );
+		$this->assertArrayNotHasKey( 'my-jetpack-missing-connection', $entries, 'missing-connection must be suppressed when a connection error is present.' );
+		$this->assertSame( 1, Notification_Counts::get_for_menu( 'my-jetpack' ), 'A single broken connection must count once.' );
+	}
+
+	/**
+	 * Without a connection error, the missing-connection slug still registers
+	 * (the product-prerequisite path is independent of the Error Handler).
+	 */
+	public function test_missing_connection_slug_registers_without_connection_error() {
+		$this->seed_cached_alerts(
+			array(
+				'missing-connection' => array(
+					'type'     => 'user',
+					'is_error' => true,
+				),
+			)
+		);
+
+		Initializer::maybe_show_red_bubble();
+
+		$this->assertArrayHasKey( 'my-jetpack-missing-connection', Notification_Counts::all() );
+	}
+}

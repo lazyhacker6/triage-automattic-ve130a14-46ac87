@@ -1,0 +1,15 @@
+.ai-assistant-feedback {
+
+	&__selection {
+		display: flex;
+
+		.components-button.has-icon {
+			padding: 0;
+			min-width: 28px;
+		}
+	}
+
+	&__thumb-selected {
+		color: var(--wpds-color-foreground-interactive-brand);
+	}
+}

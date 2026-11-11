@@ -1,0 +1,91 @@
+import domReady from '@wordpress/dom-ready';
+import './style.scss';
+
+/*
+ * Share popups here are a parallel implementation of the delegated handler in
+ * modules/sharedaddy/sharing.js, which serves the classic (non-block) buttons.
+ * That file carries the rationale; a change to either usually belongs in both.
+ */
+let sharingWindowOpen;
+const sharingWindowNames = {};
+
+function getSharingWindowName( service ) {
+	if ( typeof sharingWindowNames[ service ] !== 'string' ) {
+		sharingWindowNames[ service ] = `wpcom${ service }-${ Math.random()
+			.toString( 36 )
+			.slice( 2 ) }`;
+	}
+
+	return sharingWindowNames[ service ];
+}
+
+function isWebShareAPIEnabled( data ) {
+	if (
+		! navigator ||
+		typeof navigator.share !== 'function' ||
+		typeof navigator.canShare !== 'function'
+	) {
+		return false;
+	}
+
+	return navigator.canShare( data );
+}
+
+if ( typeof window !== 'undefined' ) {
+	domReady( () => {
+		const containers = document.getElementsByClassName( 'wp-block-jetpack-sharing-buttons' );
+
+		for ( const servicesContainer of containers ) {
+			servicesContainer.addEventListener( 'click', event => {
+				const link = event.target.closest( 'a' );
+				const service = link?.dataset?.service;
+
+				if ( ! link || ! link.classList.contains( `share-${ service }` ) ) {
+					return;
+				}
+
+				// A WordPress repost goes through sign-in and a full editor, so it keeps the link's new tab.
+				if ( service === 'mail' || service === 'wordpress' ) {
+					return;
+				}
+
+				event.preventDefault();
+				event.stopPropagation();
+
+				if ( service === 'share' ) {
+					if ( link?.href && isWebShareAPIEnabled( { url: link.href } ) ) {
+						navigator.share( { url: link.href } );
+					} else {
+						const [ tooltip ] = link.getElementsByClassName( 'tooltiptext' );
+						if ( tooltip && tooltip.style ) {
+							tooltip.style.display = 'initial';
+							setTimeout( () => {
+								tooltip.style.display = 'none';
+							}, 2000 );
+						}
+						navigator?.clipboard?.writeText( link.href );
+					}
+					return;
+				}
+
+				if ( service === 'print' ) {
+					window.print();
+					return;
+				}
+				if ( sharingWindowOpen ) {
+					sharingWindowOpen.close();
+				}
+
+				sharingWindowOpen = window.open(
+					link.getAttribute( 'href' ),
+					getSharingWindowName( service ),
+					'menubar=1,resizable=1,width=600,height=400'
+				);
+
+				if ( sharingWindowOpen ) {
+					sharingWindowOpen.focus();
+				}
+			} );
+		}
+	} );
+}

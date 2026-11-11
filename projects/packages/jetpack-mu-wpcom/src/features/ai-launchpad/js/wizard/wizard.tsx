@@ -1,0 +1,222 @@
+import apiFetch from '@wordpress/api-fetch';
+import { useEffect, useRef, useState } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+import { Button, Dialog, Stack } from '@wordpress/ui';
+import { tailor } from '../lib/tailor.ts';
+import {
+	setTracksContext,
+	trackViewed,
+	trackWizardBackClicked,
+	trackWizardGoalClicked,
+	trackWizardSiteDetailsChanged,
+	trackWizardStepCompleted,
+	trackWizardStepSkipped,
+} from '../lib/tracks.ts';
+import DetailsStep from './details-step.tsx';
+import GoalsStep from './goals-step.tsx';
+import {
+	buildWizardPayload,
+	canContinue,
+	isLastStep,
+	TOTAL_STEPS,
+	type WizardState,
+	type WizardStep,
+} from './lib.ts';
+import type { GoalSlug, SiteCopy, TailorResult, WizardInput } from '../lib/types.ts';
+
+import './style.scss';
+
+interface Props {
+	// Existing site title. Pre-fills the Name input so users don't retype it.
+	initialSiteName?: string;
+	// Existing site tagline (blogdescription). Pre-fills the Brief description.
+	initialIntent?: string;
+	// The site language, forwarded to the wizard payload and the AI call, which writes the drafts in it.
+	locale?: string;
+	// The account language, which the AI writes the task subtitles in.
+	uiLocale?: string;
+	// The site-language copy the fallback drafts are written from.
+	copy: SiteCopy;
+	// Whether the site was built with AI, which changes the fallback list.
+	aiBuilt?: boolean;
+	// Fired once Finish completes, with the persisted input and the in-flight
+	// tailor promise, so the host can swap to the tailored list.
+	onComplete?: ( input: WizardInput, tailoring: Promise< TailorResult > ) => void;
+}
+
+/**
+ * The two-step AI Launchpad onboarding wizard: pick a goal, then describe the
+ * site. Persists the input via PUT /wizard on Finish.
+ *
+ * @param props                 - Component props.
+ * @param props.initialSiteName - Existing site title used to pre-fill Name.
+ * @param props.initialIntent   - Existing site tagline used to pre-fill the description.
+ * @param props.locale          - Site language forwarded to the payload.
+ * @param props.uiLocale        - Account language the task subtitles are written in.
+ * @param props.copy            - Site-language copy for the fallback drafts.
+ * @param props.aiBuilt         - Whether the site was built with AI, which changes the fallback list.
+ * @param props.onComplete      - Called with the input and tailor promise on Finish.
+ * @return The wizard element.
+ */
+export function Wizard( {
+	initialSiteName = '',
+	initialIntent = '',
+	locale = 'en',
+	uiLocale = locale,
+	copy,
+	aiBuilt = false,
+	onComplete,
+}: Props ) {
+	const [ step, setStep ] = useState< WizardStep >( 0 );
+	const [ goal, setGoal ] = useState< GoalSlug | null >( null );
+	const [ siteName, setSiteName ] = useState< string >( initialSiteName );
+	const [ intent, setIntent ] = useState< string >( initialIntent );
+	const [ skipping, setSkipping ] = useState( false );
+	const goalsTitleRef = useRef< HTMLHeadingElement >( null );
+
+	const state: WizardState = { goal, siteName, intent, locale, uiLocale };
+	// The analytics name of the current step, shared by every event that reports one.
+	const stepName = 0 === step ? 'goal' : 'site_details';
+
+	// One viewed event per screen shown, re-firing when Back re-shows the goal step.
+	useEffect( () => {
+		trackViewed( { step: stepName } );
+	}, [ stepName ] );
+
+	// Back unmounts its own button, so move focus to the goals title instead of losing it to the page.
+	useEffect( () => {
+		if ( step === 0 ) {
+			goalsTitleRef.current?.focus();
+		}
+	}, [ step ] );
+
+	const handleNext = () => {
+		if ( ! isLastStep( step ) ) {
+			trackWizardStepCompleted( { step: stepName } );
+			// The goal is confirmed from here on; earlier funnel events carry null.
+			if ( goal ) {
+				setTracksContext( { goal } );
+			}
+			setStep( ( step + 1 ) as WizardStep );
+			return;
+		}
+		if ( ! goal ) {
+			return;
+		}
+		const payload = buildWizardPayload( goal, state );
+		// Persist in the background, best-effort so a failed save isn't an unhandled rejection.
+		// Once it lands, reflect the new title in the server-rendered admin bar in place —
+		// a reload instead would re-show the wizard (the tailored output isn't persisted yet).
+		// Mirrors the server's guard: an empty/whitespace Name never writes blogname.
+		apiFetch( {
+			path: '/wpcom/v2/ai-launchpad/wizard',
+			method: 'PUT',
+			data: payload,
+		} )
+			.then( () => {
+				const adminBarSiteName = document.querySelector( '#wp-admin-bar-site-name > a' );
+				const savedName = payload.site_name.trim();
+				if ( adminBarSiteName && savedName ) {
+					adminBarSiteName.textContent = savedName;
+				}
+			} )
+			.catch( () => {} );
+
+		const tailoring = tailor( payload, copy, aiBuilt );
+		trackWizardStepCompleted( { step: stepName } );
+		// One event per field the user actually modified, vs the pre-filled values.
+		if ( siteName.trim() !== initialSiteName.trim() ) {
+			trackWizardSiteDetailsChanged( { field: 'title' } );
+		}
+		if ( intent.trim() !== initialIntent.trim() ) {
+			trackWizardSiteDetailsChanged( { field: 'description' } );
+		}
+		// wizard_completed fires when the tailored list first lands (with the
+		// inferred context populated), not here — see TailoredList.
+		onComplete?.( payload, tailoring );
+	};
+
+	const handleBack = () => {
+		if ( step > 0 ) {
+			trackWizardBackClicked( { step: 'site_details' } );
+			setStep( ( step - 1 ) as WizardStep );
+		}
+	};
+
+	// Skipping opts out of the AI Launchpad entirely: dismiss it server-side (which leaves the
+	// site with no setup guidance) and leave for the wp-admin dashboard.
+	const handleSkip = async () => {
+		setSkipping( true );
+		trackWizardStepSkipped( { step: stepName } );
+		try {
+			await apiFetch( { path: '/wpcom/v2/ai-launchpad', method: 'DELETE' } );
+		} catch {
+			// Still navigate away: a failed dismiss write must not trap the user in the wizard.
+		}
+		// Relative to the wizard's own admin.php?page=site-setup-wp-admin URL, so this resolves to the dashboard.
+		window.location.href = 'index.php';
+	};
+
+	return (
+		// The wizard cannot be dismissed: Escape and backdrop clicks are ignored, and
+		// "Skip" is the only way out.
+		<Dialog.Root open onOpenChange={ () => undefined } disablePointerDismissal>
+			<Dialog.Popup
+				size="medium"
+				className="ai-launchpad-wizard"
+				initialFocus={ goalsTitleRef }
+				portal={ <Dialog.Portal className="ai-launchpad-wizard__portal" /> }
+			>
+				<Dialog.Content>
+					<div className="ai-launchpad-wizard__progress" aria-hidden="true">
+						<div
+							className="ai-launchpad-wizard__progress-bar"
+							style={ { width: `${ ( ( step + 1 ) / TOTAL_STEPS ) * 100 }%` } }
+						/>
+					</div>
+
+					{ step === 0 && (
+						<GoalsStep
+							titleRef={ goalsTitleRef }
+							value={ goal }
+							onChange={ nextGoal => {
+								trackWizardGoalClicked( { goal_clicked: nextGoal } );
+								setGoal( nextGoal );
+							} }
+						/>
+					) }
+					{ step === 1 && (
+						<DetailsStep
+							goal={ goal }
+							siteName={ siteName }
+							intent={ intent }
+							onSiteNameChange={ setSiteName }
+							onIntentChange={ setIntent }
+						/>
+					) }
+				</Dialog.Content>
+				<Stack render={ <Dialog.Footer /> } align="center" justify="space-between" gap="md">
+					<Button variant="minimal" onClick={ handleSkip } disabled={ skipping }>
+						{ __( 'Skip', 'jetpack-mu-wpcom' ) }
+					</Button>
+					<Stack gap="sm">
+						{ step > 0 && (
+							<Button variant="outline" onClick={ handleBack } disabled={ skipping }>
+								{ __( 'Back', 'jetpack-mu-wpcom' ) }
+							</Button>
+						) }
+						<Button
+							variant="solid"
+							onClick={ handleNext }
+							disabled={ skipping || ! canContinue( step, state ) }
+						>
+							{ isLastStep( step )
+								? __( 'Finish', 'jetpack-mu-wpcom' )
+								: __( 'Continue', 'jetpack-mu-wpcom' ) }
+						</Button>
+					</Stack>
+				</Stack>
+			</Dialog.Popup>
+		</Dialog.Root>
+	);
+}

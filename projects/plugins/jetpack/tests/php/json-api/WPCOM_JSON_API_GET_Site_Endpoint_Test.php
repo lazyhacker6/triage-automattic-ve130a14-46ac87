@@ -1,0 +1,554 @@
+<?php
+/**
+ * WPCOM_JSON_API_GET_Site_Endpoint REST-vs-XML-RPC parity tests.
+ *
+ * Run this test with command: jetpack docker phpunit jetpack -- --filter=WPCOM_JSON_API_GET_Site_Endpoint_Test
+ *
+ * @package automattic/jetpack
+ */
+
+use Automattic\Jetpack\Constants;
+use Automattic\Jetpack\PHPUnit\WP_UnitTestCase_Fix;
+use Automattic\Jetpack\Status\Cache as StatusCache;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
+
+require_once JETPACK__PLUGIN_DIR . 'class.json-api-endpoints.php';
+// Registers every endpoint version so the get-site endpoint resolves.
+require_once JETPACK__PLUGIN_DIR . 'json-endpoints.php';
+require_once __DIR__ . '/trait-assert-rest-xmlrpc-parity.php';
+require_once __DIR__ . '/fixtures/wpcom-get-site-functions.php';
+
+/**
+ * Tests for the /sites/%s get-site endpoint.
+ *
+ * @covers \WPCOM_JSON_API_GET_Site_Endpoint
+ * @covers \SAL_Site
+ */
+#[CoversClass( WPCOM_JSON_API_GET_Site_Endpoint::class )]
+#[CoversClass( SAL_Site::class )]
+class WPCOM_JSON_API_GET_Site_Endpoint_Test extends WP_UnitTestCase {
+	use WP_UnitTestCase_Fix;
+	use Assert_Rest_Xmlrpc_Parity;
+
+	/**
+	 * Prepare the environment for each test.
+	 */
+	public function set_up() {
+		if ( ! defined( 'WPCOM_JSON_API__BASE' ) ) {
+			define( 'WPCOM_JSON_API__BASE', 'public-api.wordpress.com/rest/v1' );
+		}
+
+		parent::set_up();
+
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['HTTP_HOST']      = '127.0.0.1';
+		$_SERVER['REQUEST_URI']    = '/';
+	}
+
+	/**
+	 * Clean up after each test.
+	 */
+	public function tear_down() {
+		delete_option( 'jetpack_test_legacy_gating_blog_ids' );
+		delete_option( 'wpcom_ai_launchpad_no_guidance' );
+		delete_option( 'wpcom_ai_launchpad_enabled' );
+		delete_option( 'wpcom_ai_launchpad_dismissed' );
+		foreach ( array( 'WPCOM_LAUNCHPAD_NO_GUIDANCE_CUTOFF_BLOG_ID', 'ATOMIC_SITE_ID', 'ATOMIC_CLIENT_ID', 'WPCOMSH__PLUGIN_FILE' ) as $constant ) {
+			Constants::clear_single_constant( $constant );
+		}
+		StatusCache::clear();
+		$this->tear_down_rest_parity();
+		parent::tear_down();
+		WPCOM_JSON_API::init()->query         = array();
+		WPCOM_JSON_API::init()->token_details = array();
+		delete_option( 'jetpack_callable_wp_get_environment_type' );
+	}
+
+	/**
+	 * The SAL `after_render()` adds `updates` for admins -- past the `fields` filter, and only when
+	 * `options` is in the response (is_main_site() reads it). XML-RPC's output() trims it via
+	 * filter_fields(); before rest_callback() did the same, it leaked on the REST transport only.
+	 * A distinct trigger from the posts force-add: the extra key comes from after_render(), not the
+	 * endpoint's own render loop.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_rest_xmlrpc_parity_fields_trims_after_render_updates() {
+		// Precondition: with `updates` (and `options`, which is_main_site() requires) in `fields`,
+		// our admin sees it -- confirming this environment actually surfaces the key to be trimmed.
+		list( , $with_updates ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array( 'fields' => 'ID,options,updates' )
+		);
+		if ( ! array_key_exists( 'updates', $with_updates ) ) {
+			$this->markTestSkipped( 'Environment did not surface get-site `updates`; nothing to assert.' );
+		}
+
+		// The fix: with `updates` NOT requested (but `options` present so after_render still adds it),
+		// both transports must trim it.
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array( 'fields' => 'ID,options' )
+		);
+
+		$this->assertArrayHasKey( 'ID', $rest );
+		$this->assertArrayNotHasKey( 'updates', $rest, 'rest_callback() must trim after_render-added `updates` not in `fields`.' );
+		$this->assertArrayNotHasKey( 'updates', $xmlrpc );
+		// assert_rest_parity() already asserts the bodies match; this pins the regression.
+		$this->assertSame( array_keys( $xmlrpc ), array_keys( $rest ) );
+	}
+
+	/**
+	 * Outside WordPress.com, `difm_lite_site_options` must be omitted from the get-site
+	 * `options` object even while a DIFM build is flagged in progress: the SAL getter
+	 * returns null on the non-WPCOM path and the endpoint must not emit the key at all.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_difm_lite_site_options_omitted_outside_wpcom() {
+		// The test bootstrap mocks has_blog_sticker() as get_option(), so this makes
+		// is_difm_lite_in_progress() report an active build in this environment.
+		update_option( 'difm-lite-in-progress', true );
+
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array( 'fields' => 'ID,options' )
+		);
+
+		$bodies = array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		);
+		foreach ( $bodies as $transport => $body ) {
+			$this->assertArrayHasKey( 'options', $body, "get-site ($transport) did not render `options`." );
+			$options = (array) $body['options'];
+			if ( empty( $options['is_difm_lite_in_progress'] ) ) {
+				$this->markTestSkipped( 'Environment did not surface an in-progress DIFM build; nothing to assert.' );
+			}
+			$this->assertArrayNotHasKey(
+				'difm_lite_site_options',
+				$options,
+				"`difm_lite_site_options` must be omitted ($transport) when the SAL getter returns null."
+			);
+		}
+	}
+
+	/**
+	 * `is_legacy_gating_site` has to be emitted as a boolean when asked for by name.
+	 *
+	 * Clients read it to decide whether a plan change could move the site off the pre-2026 feature
+	 * gating, and skip that check entirely when it is false -- so a missing key or a non-boolean would
+	 * silently change behaviour for every site rather than erroring.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_is_legacy_gating_site_is_rendered_when_requested() {
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array(
+				'fields'  => 'ID,options',
+				'options' => 'is_legacy_gating_site',
+			)
+		);
+
+		foreach ( array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		) as $transport => $body ) {
+			$this->assertArrayHasKey( 'options', $body, "get-site ($transport) did not render `options`." );
+			$options = (array) $body['options'];
+
+			$this->assertArrayHasKey(
+				'is_legacy_gating_site',
+				$options,
+				"`is_legacy_gating_site` must be emitted ($transport) when requested by name."
+			);
+			$this->assertIsBool(
+				$options['is_legacy_gating_site'],
+				"`is_legacy_gating_site` must be a boolean ($transport), not a truthy value."
+			);
+		}
+	}
+
+	/**
+	 * The rendered value has to be the predicate's verdict for the rendered site, not just any
+	 * boolean: clients skip the plan-change check entirely when it is false.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_is_legacy_gating_site_renders_the_predicate_verdict() {
+		global $blog_id;
+
+		if ( '1' === getenv( 'JETPACK_TEST_WPCOMSH' ) ) {
+			$this->markTestSkipped( 'The real WPCOM_Features is loaded here, so the predicate is not controllable.' );
+		}
+
+		// The bootstrap mock reads this option; see tests/php/lib/class-wpcom-features.php.
+		update_option( 'jetpack_test_legacy_gating_blog_ids', array( (int) $blog_id ) );
+
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array(
+				'fields'  => 'ID,options',
+				'options' => 'is_legacy_gating_site',
+			)
+		);
+
+		foreach ( array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		) as $transport => $body ) {
+			$options = (array) $body['options'];
+
+			$this->assertTrue(
+				$options['is_legacy_gating_site'],
+				"`is_legacy_gating_site` must render the predicate's verdict ($transport)."
+			);
+		}
+	}
+
+	/**
+	 * Calypso gates My Home and the site overview on this flag, so it must render as the option's boolean.
+	 *
+	 * @dataProvider provide_ai_launchpad_no_guidance_states
+	 * @group json-api
+	 *
+	 * @param bool $set Whether the option is set on the site.
+	 */
+	#[DataProvider( 'provide_ai_launchpad_no_guidance_states' )]
+	#[Group( 'json-api' )]
+	public function test_ai_launchpad_no_guidance_renders_the_option( $set ) {
+		if ( $set ) {
+			update_option( 'wpcom_ai_launchpad_no_guidance', 1 );
+		}
+
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array(
+				'fields'  => 'ID,options',
+				'options' => 'wpcom_ai_launchpad_no_guidance',
+			)
+		);
+
+		foreach ( array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		) as $transport => $body ) {
+			$options = (array) $body['options'];
+
+			$this->assertArrayHasKey( 'wpcom_ai_launchpad_no_guidance', $options, "Missing from the options ($transport)." );
+			$this->assertSame( $set, $options['wpcom_ai_launchpad_no_guidance'], "Wrong value ($transport)." );
+		}
+	}
+
+	/**
+	 * A skipped AI Launchpad is no-guidance and no longer enabled, matching the wp-admin surfaces.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_skipped_ai_launchpad_renders_as_no_guidance() {
+		update_option( 'wpcom_ai_launchpad_enabled', 1 );
+		update_option( 'wpcom_ai_launchpad_dismissed', 1 );
+
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array(
+				'fields'  => 'ID,options',
+				'options' => 'wpcom_ai_launchpad_enabled,wpcom_ai_launchpad_no_guidance',
+			)
+		);
+
+		foreach ( array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		) as $transport => $body ) {
+			$options = (array) $body['options'];
+
+			$this->assertTrue( $options['wpcom_ai_launchpad_no_guidance'], "Skipped must be no-guidance ($transport)." );
+			$this->assertFalse( $options['wpcom_ai_launchpad_enabled'], "Skipped must not be enabled ($transport)." );
+		}
+	}
+
+	/**
+	 * A site past the cutoff is no-guidance on Atomic unless it uses the AI Launchpad, but a self-hosted
+	 * site, which shares the blog ID sequence, keeps its guidance.
+	 *
+	 * @dataProvider provide_no_guidance_cutoff_hosts
+	 * @group json-api
+	 *
+	 * @param bool $is_atomic Whether the site is on WordPress.com Atomic.
+	 * @param bool $enabled   Whether wpcom_ai_launchpad_enabled is set.
+	 * @param bool $expected  Expected no-guidance value.
+	 */
+	#[DataProvider( 'provide_no_guidance_cutoff_hosts' )]
+	#[Group( 'json-api' )]
+	public function test_no_guidance_cutoff_only_applies_to_atomic( $is_atomic, $enabled, $expected ) {
+		Constants::set_constant( 'WPCOM_LAUNCHPAD_NO_GUIDANCE_CUTOFF_BLOG_ID', 1 );
+		if ( $enabled ) {
+			update_option( 'wpcom_ai_launchpad_enabled', 1 );
+		}
+		if ( $is_atomic ) {
+			Constants::set_constant( 'ATOMIC_SITE_ID', 1 );
+			Constants::set_constant( 'ATOMIC_CLIENT_ID', 1 );
+			Constants::set_constant( 'WPCOMSH__PLUGIN_FILE', 'wpcomsh.php' );
+		}
+		// Host caches is_woa_site(), so an earlier check would hide the constants just set.
+		StatusCache::clear();
+
+		list( $xmlrpc, $rest ) = $this->assert_rest_parity(
+			$this->get_endpoint(),
+			array(
+				'fields'  => 'ID,options',
+				'options' => 'wpcom_ai_launchpad_no_guidance',
+			)
+		);
+
+		foreach ( array(
+			'xmlrpc' => $xmlrpc,
+			'rest'   => $rest,
+		) as $transport => $body ) {
+			$options = (array) $body['options'];
+
+			$this->assertSame( $expected, $options['wpcom_ai_launchpad_no_guidance'], "Wrong value ($transport)." );
+		}
+	}
+
+	/**
+	 * Data provider for test_no_guidance_cutoff_only_applies_to_atomic.
+	 *
+	 * @return array
+	 */
+	public static function provide_no_guidance_cutoff_hosts() {
+		return array(
+			'Atomic'                   => array( true, false, true ),
+			'Atomic with AI Launchpad' => array( true, true, false ),
+			'self-hosted'              => array( false, false, false ),
+		);
+	}
+
+	/**
+	 * Data provider for test_ai_launchpad_no_guidance_renders_the_option.
+	 *
+	 * @return array
+	 */
+	public static function provide_ai_launchpad_no_guidance_states() {
+		return array(
+			'set'   => array( true ),
+			'unset' => array( false ),
+		);
+	}
+
+	/**
+	 * Test that WordPress.com-only fields are returned when explicitly requested.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_requested_wpcom_only_fields_are_rendered_for_site_response() {
+		global $blog_id;
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		update_option( 'jetpack_callable_wp_get_environment_type', 'local' );
+		WPCOM_JSON_API::init()->query         = array( 'fields' => 'ID,hosting_provider_guess,environment_type' );
+		WPCOM_JSON_API::init()->token_details = array( 'blog_id' => $blog_id );
+
+		$response = $this->get_wpcom_endpoint()->callback( '/sites/%s', $blog_id );
+
+		$this->assertSame( get_jetpack_hosting_provider( $blog_id ), $response['hosting_provider_guess'] );
+		$this->assertSame( 'local', $response['environment_type'] );
+	}
+
+	/**
+	 * Test that WordPress.com platform fields are only returned when explicitly requested.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_wpcom_platform_fields_are_not_rendered_without_explicit_fields() {
+		global $blog_id;
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		update_option( 'jetpack_callable_wp_get_environment_type', 'local' );
+		WPCOM_JSON_API::init()->token_details = array( 'blog_id' => $blog_id );
+
+		$endpoint = $this->get_wpcom_endpoint();
+
+		WPCOM_JSON_API::init()->query = array();
+		$response                     = $endpoint->callback( '/sites/%s', $blog_id );
+
+		$this->assertArrayNotHasKey( 'hosting_provider_guess', $response );
+		$this->assertArrayNotHasKey( 'environment_type', $response );
+
+		WPCOM_JSON_API::init()->query = array( 'fields' => 'ID,name' );
+		$response                     = $endpoint->callback( '/sites/%s', $blog_id );
+
+		$this->assertArrayNotHasKey( 'hosting_provider_guess', $response );
+		$this->assertArrayNotHasKey( 'environment_type', $response );
+	}
+
+	/**
+	 * Test that WordPress.com platform fields are returned for v1.2 site responses when explicitly requested.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_requested_wpcom_platform_fields_are_rendered_for_v1_2_site_response() {
+		global $blog_id;
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		update_option( 'jetpack_callable_wp_get_environment_type', 'staging' );
+		WPCOM_JSON_API::init()->query         = array( 'fields' => 'ID,hosting_provider_guess,environment_type' );
+		WPCOM_JSON_API::init()->token_details = array( 'blog_id' => $blog_id );
+
+		$endpoint = $this->get_wpcom_v1_2_endpoint();
+		$response = $endpoint->callback( '/sites/%s', $blog_id );
+
+		remove_filter( 'sites_site_format', array( $endpoint, 'site_format' ) );
+
+		$this->assertSame( get_jetpack_hosting_provider( $blog_id ), $response['hosting_provider_guess'] );
+		$this->assertSame( 'staging', $response['environment_type'] );
+	}
+
+	/**
+	 * Test that WordPress.com-only decorations are added to Jetpack responses when explicitly requested.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_requested_wpcom_only_fields_decorate_jetpack_response() {
+		global $blog_id;
+
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		update_option( 'jetpack_callable_wp_get_environment_type', 'staging' );
+		WPCOM_JSON_API::init()->query         = array( 'fields' => 'ID,hosting_provider_guess,environment_type' );
+		WPCOM_JSON_API::init()->token_details = array( 'blog_id' => $blog_id );
+
+		$endpoint = $this->get_wpcom_endpoint();
+
+		$response = (object) array( 'ID' => $blog_id );
+		$endpoint->decorate_jetpack_response( $response );
+
+		$this->assertSame( get_jetpack_hosting_provider( $blog_id ), $response->hosting_provider_guess );
+		$this->assertSame( 'staging', $response->environment_type );
+	}
+
+	/**
+	 * Test that public Jetpack responses do not get WordPress.com-only decorations.
+	 *
+	 * @group json-api
+	 */
+	#[Group( 'json-api' )]
+	public function test_wpcom_only_fields_do_not_decorate_public_jetpack_response() {
+		global $blog_id;
+
+		wp_set_current_user( 0 );
+		update_option( 'jetpack_callable_wp_get_environment_type', 'staging' );
+		WPCOM_JSON_API::init()->query         = array( 'fields' => 'ID,hosting_provider_guess,environment_type' );
+		WPCOM_JSON_API::init()->token_details = array( 'blog_id' => $blog_id );
+
+		$endpoint = $this->get_wpcom_endpoint();
+
+		$response = (object) array( 'ID' => $blog_id );
+		$endpoint->decorate_jetpack_response( $response );
+
+		$this->assertFalse( property_exists( $response, 'hosting_provider_guess' ) );
+		$this->assertFalse( property_exists( $response, 'environment_type' ) );
+	}
+
+	/**
+	 * Retrieve the registered v1.1 get-site endpoint.
+	 *
+	 * @return WPCOM_JSON_API_GET_Site_Endpoint
+	 *
+	 * @phan-suppress PhanTypeArraySuspicious
+	 */
+	private function get_endpoint() {
+		$api = WPCOM_JSON_API::init();
+		foreach ( $api->endpoints as $endpoints_by_method ) {
+			$endpoint = $endpoints_by_method['GET'] ?? null;
+			// Pick the get-site endpoint (base or v1.2 subclass) that is actually REST-enabled,
+			// rather than matching a specific version -- robust to registration order/state.
+			if (
+				$endpoint instanceof WPCOM_JSON_API_GET_Site_Endpoint
+				&& '/sites/%s' === $endpoint->path
+				&& ! empty( $endpoint->rest_route )
+			) {
+				return $endpoint;
+			}
+		}
+		$this->markTestSkipped( 'No REST-enabled get-site endpoint (/sites/%s) is registered in this run.' );
+	}
+
+	/**
+	 * Get a test endpoint that behaves as if it is running on WordPress.com.
+	 *
+	 * @return WPCOM_JSON_API_GET_Site_Endpoint
+	 */
+	private function get_wpcom_endpoint() {
+		return new class(
+			array(
+				'description'                          => 'Get information about a site.',
+				'group'                                => 'sites',
+				'stat'                                 => 'sites:X',
+				'allowed_if_flagged'                   => true,
+				'method'                               => 'GET',
+				'max_version'                          => '1.1',
+				'new_version'                          => '1.2',
+				'path'                                 => '/sites/%s',
+				'path_labels'                          => array(
+					'$site' => '(int|string) Site ID or domain',
+				),
+				'rest_route'                           => '/site',
+				'rest_min_jp_version'                  => '15.9',
+				'allow_jetpack_site_auth'              => true,
+				'allow_fallback_to_jetpack_blog_token' => true,
+				'query_parameters'                     => array(
+					'context' => false,
+					'options' => '(string) Optional. Returns specified options only. Comma-separated list. Example: options=login_url,timezone',
+				),
+				'response_format'                      => WPCOM_JSON_API_GET_Site_Endpoint::$site_format,
+				'example_request'                      => 'https://public-api.wordpress.com/rest/v1/sites/en.blog.wordpress.com/',
+			)
+		) extends WPCOM_JSON_API_GET_Site_Endpoint {
+			/**
+			 * Whether this request is running on WordPress.com.
+			 *
+			 * @return bool
+			 */
+			protected function is_wpcom() {
+				return true;
+			}
+		};
+	}
+
+	/**
+	 * Get a v1.2 test endpoint that behaves as if it is running on WordPress.com.
+	 *
+	 * @return WPCOM_JSON_API_GET_Site_V1_2_Endpoint
+	 */
+	private function get_wpcom_v1_2_endpoint() {
+		return new class(
+			array(
+				'method'          => 'GET',
+				'path'            => '/sites/%s',
+				'response_format' => WPCOM_JSON_API_GET_Site_V1_2_Endpoint::$site_format,
+			)
+		) extends WPCOM_JSON_API_GET_Site_V1_2_Endpoint {
+			/**
+			 * Whether this request is running on WordPress.com.
+			 *
+			 * @return bool
+			 */
+			protected function is_wpcom() {
+				return true;
+			}
+		};
+	}
+}

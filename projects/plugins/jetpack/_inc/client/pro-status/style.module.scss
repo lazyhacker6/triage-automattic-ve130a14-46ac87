@@ -1,0 +1,56 @@
+.status {
+	align-items: center;
+	display: inline-flex;
+	font-weight: 600;
+	line-height: 1.666;
+	white-space: nowrap;
+
+	&.is-active {
+		color: var(--wpds-color-foreground-content-success-weak);
+
+		.indicator {
+			background-color: var(--wpds-color-foreground-content-success-weak);
+		}
+	}
+
+	&.is-inactive {
+		color: var(--wpds-color-foreground-content-neutral-weak);
+
+		.indicator {
+			background-color: var(--wpds-color-foreground-content-neutral-weak);
+		}
+	}
+
+	&.is-error {
+		color: var(--wpds-color-foreground-content-error-weak);
+
+		.indicator {
+			background-color: var(--wpds-color-foreground-content-error-weak);
+		}
+	}
+
+	&.is-action {
+		color: var(--wpds-color-foreground-content-warning-weak);
+
+		.indicator {
+			background-color: var(--wpds-color-foreground-content-warning-weak);
+		}
+	}
+
+	&.is-initializing {
+		color: var(--wpds-color-foreground-content-info-weak);
+
+		.indicator {
+			background-color: var(--wpds-color-foreground-content-info-weak);
+		}
+	}
+}
+
+.indicator {
+	background-color: var(--wpds-color-foreground-content-neutral-weak);
+	border-radius: 50%;
+	flex-shrink: 0;
+	height: 0.666em;
+	margin-inline-end: 4px;
+	width: 0.666em;
+}

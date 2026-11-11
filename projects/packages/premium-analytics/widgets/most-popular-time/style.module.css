@@ -1,0 +1,10 @@
+/* Stacked highlights (a phone-width tile, or a value too wide to share a row)
+ * outgrow a one-row body, so scroll rather than clip. */
+.content {
+	display: flex;
+	flex-direction: column;
+	block-size: 100%;
+	min-block-size: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+}

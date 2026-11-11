@@ -1,0 +1,10 @@
+.cache/
+.vscode/
+
+vendor/
+node_modules/
+build/
+build-module
+wordpress/
+
+routes/**/.content-entry.js

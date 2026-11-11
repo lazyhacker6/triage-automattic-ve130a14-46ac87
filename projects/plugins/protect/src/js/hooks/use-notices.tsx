@@ -1,0 +1,121 @@
+import { createInterpolateElement } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+import { Link } from '@wordpress/ui';
+import { createContext, useCallback, useContext, useState } from 'react';
+import { FREE_PLUGIN_SUPPORT_URL, PAID_PLUGIN_SUPPORT_URL } from '../constants';
+import usePlan from './use-plan';
+import type { JSX, Dispatch, FC, ReactNode, SetStateAction } from 'react';
+
+interface NoticeState {
+	message?: string | JSX.Element;
+	spokenMessage?: string;
+	// Stamped by the provider on every notice, so an identical repeat still announces.
+	noticeId?: number;
+	dismissable?: boolean;
+	duration?: number;
+	type?: 'success' | 'info' | 'warning' | 'error';
+}
+
+interface NoticeContextValue {
+	notice: NoticeState;
+	setNotice: Dispatch< SetStateAction< NoticeState > >;
+}
+
+let lastNoticeId = 0;
+
+const NoticeContext = createContext< NoticeContextValue | undefined >( undefined );
+
+export const NoticeProvider: FC< { children: ReactNode } > = ( { children } ) => {
+	const [ notice, setNoticeState ] = useState< NoticeState >( null );
+
+	const setNotice: Dispatch< SetStateAction< NoticeState > > = useCallback( value => {
+		const noticeId = ++lastNoticeId;
+
+		setNoticeState( previous => {
+			const next = 'function' === typeof value ? value( previous ) : value;
+			return next ? { ...next, noticeId } : next;
+		} );
+	}, [] );
+
+	return (
+		<NoticeContext.Provider value={ { notice, setNotice } }>{ children }</NoticeContext.Provider>
+	);
+};
+
+/**
+ * Notices Hook
+ *
+ * @return {object} Notices object
+ */
+export default function useNotices() {
+	const { hasPlan } = usePlan();
+	const { notice, setNotice } = useContext( NoticeContext );
+
+	const clearNotice = useCallback( () => {
+		setNotice( null );
+	}, [ setNotice ] );
+
+	const showSuccessNotice = useCallback(
+		( message: string ) => {
+			setNotice( {
+				type: 'success',
+				dismissable: true,
+				duration: 7_500,
+				message,
+			} );
+		},
+		[ setNotice ]
+	);
+
+	const showSavingNotice = useCallback(
+		( message?: string ) => {
+			setNotice( {
+				type: 'info',
+				dismissable: false,
+				message: message || __( 'Saving Changes…', 'jetpack-protect' ),
+			} );
+		},
+		[ setNotice ]
+	);
+
+	const showErrorNotice = useCallback(
+		( message: string ) => {
+			const error = message || __( 'An error occurred.', 'jetpack-protect' );
+			const advice = __(
+				'Please try again or <supportLink>contact support</supportLink>.',
+				'jetpack-protect'
+			);
+
+			setNotice( {
+				type: 'error',
+				dismissable: true,
+				// The same translated string, minus the one interpolation tag it carries.
+				// Strip it by name: a generic tag strip trips CodeQL's sanitization rule.
+				spokenMessage: `${ error } ${ advice.replace( /<\/?supportLink>/g, '' ) }`,
+				message: (
+					<>
+						{ error }{ ' ' }
+						{ createInterpolateElement( advice, {
+							supportLink: (
+								<Link
+									openInNewTab
+									href={ hasPlan ? PAID_PLUGIN_SUPPORT_URL : FREE_PLUGIN_SUPPORT_URL }
+									children={ null }
+								/>
+							),
+						} ) }
+					</>
+				),
+			} );
+		},
+		[ hasPlan, setNotice ]
+	);
+
+	return {
+		notice,
+		clearNotice,
+		showSavingNotice,
+		showSuccessNotice,
+		showErrorNotice,
+	};
+}

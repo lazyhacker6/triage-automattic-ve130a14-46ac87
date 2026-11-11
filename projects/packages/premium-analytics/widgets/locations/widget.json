@@ -1,0 +1,39 @@
+{
+	"name": "jpa/locations",
+	"icon": "jpa/map-marker",
+	"title": "Top locations",
+	"description": "Where your visitors are viewing from — by country, region, or city.",
+	"help": {
+		"content": "The countries, regions, and cities where your visitors came from, sorted by views.",
+		"links": [
+			{
+				"label": "Learn more",
+				"href": "https://jetpack.com/support/jetpack-stats/"
+			}
+		]
+	},
+	"category": "stats",
+	"presentation": "framed",
+	"attributes": [
+		{
+			"id": "geoGranularity",
+			"type": "jpa/select",
+			"label": "View by",
+			"relevance": "high",
+			"elements": [
+				{
+					"value": "country",
+					"label": "Countries"
+				},
+				{
+					"value": "region",
+					"label": "Regions"
+				},
+				{
+					"value": "city",
+					"label": "Cities"
+				}
+			]
+		}
+	]
+}

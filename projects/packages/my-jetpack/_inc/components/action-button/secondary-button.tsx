@@ -1,0 +1,104 @@
+import { __ } from '@wordpress/i18n';
+import { Button, Link, ButtonLink } from '@wordpress/ui';
+import type { FC, MouseEvent } from 'react';
+
+export type SecondaryButtonProps = {
+	href?: string;
+	size?: 'normal' | 'compact';
+	variant?: 'primary' | 'secondary' | 'link' | 'tertiary';
+	label?: string;
+	shouldShowButton?: () => boolean;
+	onClick?: ( () => void ) | ( ( e: MouseEvent< HTMLElement > ) => void );
+	isExternalLink?: boolean;
+	disabled?: boolean;
+	isLoading?: boolean;
+	loadingAnnouncement?: string;
+	className?: string;
+	id?: string;
+	'aria-labelledby'?: string;
+};
+
+const variantMap = {
+	primary: 'solid',
+	secondary: 'outline',
+	tertiary: 'minimal',
+	link: 'unstyled',
+} as const;
+
+const sizeMap = {
+	normal: 'default',
+	compact: 'compact',
+} as const;
+
+type UiButtonVariant = ( typeof variantMap )[ keyof typeof variantMap ];
+
+const SecondaryButton: FC< SecondaryButtonProps > = props => {
+	const {
+		shouldShowButton = () => true,
+		size = 'compact',
+		variant = 'secondary',
+		label = __( 'Learn more', 'jetpack-my-jetpack' ),
+		href,
+		onClick,
+		isExternalLink,
+		disabled,
+		isLoading,
+		loadingAnnouncement,
+		className,
+		id,
+		'aria-labelledby': ariaLabelledBy,
+	} = props;
+
+	if ( ! shouldShowButton() ) {
+		return null;
+	}
+
+	if ( variant === 'link' && href ) {
+		return (
+			<Link
+				id={ id }
+				href={ href }
+				openInNewTab={ isExternalLink }
+				onClick={ onClick }
+				className={ className }
+				aria-labelledby={ ariaLabelledBy }
+			>
+				{ label }
+			</Link>
+		);
+	}
+
+	const mappedVariant: UiButtonVariant = variantMap[ variant ];
+
+	const sharedProps = {
+		variant: mappedVariant,
+		size: sizeMap[ size ],
+		onClick,
+		className,
+		id,
+		'aria-labelledby': ariaLabelledBy,
+	};
+
+	// A loading or disabled control isn't navigable, so keep a real Button for
+	// the spinner / disabled chrome. Otherwise ButtonLink owns href natively.
+	if ( href && ! isLoading && ! disabled ) {
+		return (
+			<ButtonLink { ...sharedProps } href={ href } openInNewTab={ isExternalLink }>
+				{ label }
+			</ButtonLink>
+		);
+	}
+
+	return (
+		<Button
+			{ ...sharedProps }
+			disabled={ disabled }
+			loading={ isLoading }
+			loadingAnnouncement={ loadingAnnouncement }
+		>
+			{ label }
+		</Button>
+	);
+};
+
+export default SecondaryButton;

@@ -1,0 +1,333 @@
+import { useAnalytics } from '@automattic/jetpack-shared-extension-utils';
+import { store as blockEditorStore, useBlockProps } from '@wordpress/block-editor';
+import { Icon, Spinner } from '@wordpress/components';
+import { useInstanceId } from '@wordpress/compose';
+import { useDispatch, useSelect } from '@wordpress/data';
+import { useState, useEffect } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+import ConnectBanner from '../../shared/components/connect-banner';
+import { StripeNudge } from '../../shared/components/stripe-nudge';
+import { SUPPORTED_CURRENCIES } from '../../shared/currencies';
+import getConnectUrl from '../../shared/get-connect-url';
+import useIsUserConnected from '../../shared/use-is-user-connected';
+import { store as membershipProductsStore } from '../../store/membership-products';
+import { STORE_NAME as MEMBERSHIPS_PRODUCTS_STORE } from '../../store/membership-products/constants';
+import buildCustomStyles from './build-custom-styles';
+import Controls from './controls';
+import fetchDefaultProducts from './fetch-default-products';
+import fetchStatus from './fetch-status';
+import { TRIGGER_ICONS } from './icons';
+import LoadingError from './loading-error';
+import StyleControls from './style-controls';
+import Tabs from './tabs';
+
+// Dedupe block_loaded event firings across React re-mounts within the same editor session.
+const blockLoadedFiredClientIds = new Set();
+
+const Edit = props => {
+	const { attributes, setAttributes, clientId } = props;
+	const {
+		currency,
+		tabsAppearance,
+		className,
+		displayMode,
+		triggerButtonText,
+		triggerIcon,
+		triggerSticky,
+	} = attributes;
+	const { tracks } = useAnalytics();
+
+	// Migrate legacy blocks that used the block-style variation
+	// (`is-style-buttons` saved into `className`) over to the new
+	// `tabsAppearance` attribute. Strips the class so the toggle in the
+	// Appearance control reflects reality and can switch back to "Tabs".
+	useEffect( () => {
+		if ( typeof className === 'string' && className.split( ' ' ).includes( 'is-style-buttons' ) ) {
+			const cleaned = className
+				.split( ' ' )
+				.filter( c => c !== 'is-style-buttons' )
+				.join( ' ' )
+				.trim();
+			setAttributes( {
+				tabsAppearance: 'buttons',
+				className: cleaned || undefined,
+			} );
+		}
+	}, [ className, setAttributes ] );
+
+	const instanceId = useInstanceId( Edit, 'jp-donations' );
+	const customStyles = buildCustomStyles( attributes, `.${ instanceId }` );
+
+	const wrapperClassName = [
+		instanceId,
+		tabsAppearance === 'buttons' && 'is-style-buttons',
+		displayMode === 'modal' && 'is-display-modal',
+		displayMode === 'modal' && triggerSticky && 'is-sticky',
+	]
+		.filter( Boolean )
+		.join( ' ' );
+	const blockProps = useBlockProps( { className: wrapperClassName } );
+	const [ loadingError, setLoadingError ] = useState( '' );
+	const isUserConnected = useIsUserConnected();
+	const { getBlockAttributes } = useSelect( blockEditorStore );
+	const { updateBlockAttributes } = useDispatch( blockEditorStore );
+
+	// When the inserter renders this block as an example/preview (it declares
+	// `"example": {}` in block.json), Gutenberg mounts this Edit component inside
+	// a BlockPreview with `isPreviewMode` set. We use this flag to skip all editor
+	// side effects (Stripe status fetch, post-saving lock, analytics) so hovering
+	// the block in the inserter doesn't lock post saving or fire tracking events.
+	// Mirrors the `map` block.
+	const isPreviewMode = useSelect(
+		select => select( blockEditorStore ).getSettings().isPreviewMode,
+		[]
+	);
+
+	const { lockPostSaving, unlockPostSaving } = useDispatch( 'core/editor' );
+	const post = useSelect( select => select( 'core/editor' ).getCurrentPost(), [] );
+	const isPostSavingLocked = useSelect(
+		select => select( 'core/editor' ).isPostSavingLocked(),
+		[]
+	);
+
+	const stripeConnectUrl = useSelect(
+		select => select( membershipProductsStore ).getConnectUrl() || '',
+		[]
+	);
+
+	const { setConnectUrl, setConnectedAccountDefaultCurrency } = useDispatch(
+		MEMBERSHIPS_PRODUCTS_STORE
+	);
+
+	const stripeDefaultCurrency = useSelect( select =>
+		select( MEMBERSHIPS_PRODUCTS_STORE ).getConnectedAccountDefaultCurrency()
+	);
+
+	// Fire jetpack_donations_block_loaded once per clientId per session.
+	// Wait until either Stripe state has resolved (stripeConnectUrl OR
+	// stripeDefaultCurrency populated) or the user is not Jetpack-connected,
+	// so the stripe_connected snapshot is accurate.
+	useEffect( () => {
+		if ( isPreviewMode || ! clientId || blockLoadedFiredClientIds.has( clientId ) ) {
+			return;
+		}
+		const stripeStateResolved = !! stripeConnectUrl || !! stripeDefaultCurrency;
+		if ( isUserConnected && ! stripeStateResolved ) {
+			return;
+		}
+		blockLoadedFiredClientIds.add( clientId );
+		tracks.recordEvent( 'jetpack_donations_block_loaded', {
+			feature: 'donations',
+			surface: 'block_editor',
+			is_user_connected: !! isUserConnected,
+			stripe_connected: isUserConnected ? ! stripeConnectUrl : null,
+		} );
+	}, [
+		clientId,
+		isUserConnected,
+		stripeConnectUrl,
+		stripeDefaultCurrency,
+		tracks,
+		isPreviewMode,
+	] );
+
+	useEffect( () => {
+		if ( ! currency && stripeDefaultCurrency && ! isPostSavingLocked ) {
+			const uppercasedStripeCurrency = stripeDefaultCurrency.toUpperCase();
+			const isCurrencySupported = !! SUPPORTED_CURRENCIES[ uppercasedStripeCurrency ];
+			if ( isCurrencySupported ) {
+				// If no currency is available, default to the stripe one
+				setAttributes( { currency: uppercasedStripeCurrency } );
+			} else {
+				// We default to USD
+				setAttributes( { currency: 'USD' } );
+			}
+		}
+	}, [ currency, stripeDefaultCurrency, isPostSavingLocked, setAttributes ] );
+
+	const apiError = message => {
+		setLoadingError( message );
+	};
+
+	const hasRequiredProducts = productIdsPerInterval => {
+		const intervals = Object.keys( productIdsPerInterval );
+
+		return (
+			intervals.includes( 'one-time' ) &&
+			intervals.includes( '1 month' ) &&
+			intervals.includes( '1 year' )
+		);
+	};
+
+	useEffect( () => {
+		if ( isPreviewMode ) {
+			return;
+		}
+
+		// One lock per block, so one block's response can't unlock saving for another.
+		const lockName = `donations-${ clientId }`;
+		lockPostSaving( lockName );
+
+		// Set when the effect re-runs or the block goes away: an outdated response must not
+		// unlock saving or write plans while a newer fetch is still in flight.
+		let isStale = false;
+
+		const onError = message => {
+			if ( isStale ) {
+				return;
+			}
+			unlockPostSaving( lockName );
+			apiError( message );
+		};
+
+		const filterProducts = productList =>
+			productList.reduce(
+				( filteredProducts, { id, currency: productCurrency, type, interval } ) => {
+					if ( productCurrency === currency && type === 'donation' ) {
+						filteredProducts[ interval ] = id;
+					}
+					return filteredProducts;
+				},
+				{}
+			);
+
+		// Called before saving is unlocked, so a save can't go out without the plan IDs.
+		// Reads and writes through the store: the user may edit the block during the fetch,
+		// and setAttributes() writes to the multi-selection, if any, instead of this block.
+		const savePlanIds = productIdsPerInterval => {
+			const current = getBlockAttributes( clientId );
+			if ( ! current ) {
+				return;
+			}
+			const updates = {};
+			for ( const [ key, interval ] of [
+				[ 'oneTimeDonation', 'one-time' ],
+				[ 'monthlyDonation', '1 month' ],
+				[ 'annualDonation', '1 year' ],
+			] ) {
+				const planId = productIdsPerInterval[ interval ];
+				if ( planId && current[ key ]?.planId !== planId ) {
+					updates[ key ] = { ...current[ key ], planId };
+				}
+			}
+			if ( Object.keys( updates ).length ) {
+				updateBlockAttributes( clientId, updates );
+			}
+		};
+
+		fetchStatus( 'donation' ).then( result => {
+			if ( isStale ) {
+				return;
+			}
+			if ( ( ! result && typeof result !== 'object' ) || result.errors ) {
+				unlockPostSaving( lockName );
+				setLoadingError( __( 'Could not load data from WordPress.com.', 'jetpack' ) );
+				return;
+			}
+			setConnectUrl( getConnectUrl( post.id, result.connect_url ) );
+			setConnectedAccountDefaultCurrency(
+				result?.connected_account_default_currency?.toUpperCase()
+			);
+
+			const filteredProducts = filterProducts( result.products );
+
+			if ( hasRequiredProducts( filteredProducts ) ) {
+				savePlanIds( filteredProducts );
+				unlockPostSaving( lockName );
+				return;
+			}
+
+			// No Stripe connection yet: the block shows the connect nudge instead of the form.
+			if ( result.connect_url ) {
+				unlockPostSaving( lockName );
+				return;
+			}
+
+			if ( currency ) {
+				// Only create products if we have the correct plan and stripe connection.
+				fetchDefaultProducts( currency ).then( defaultProducts => {
+					if ( isStale ) {
+						return;
+					}
+					savePlanIds( filterProducts( defaultProducts ) );
+					unlockPostSaving( lockName );
+				}, onError );
+				return;
+			}
+
+			unlockPostSaving( lockName );
+		}, onError );
+
+		return () => {
+			isStale = true;
+			unlockPostSaving( lockName );
+		};
+	}, [
+		lockPostSaving,
+		currency,
+		post.id,
+		setConnectUrl,
+		setConnectedAccountDefaultCurrency,
+		unlockPostSaving,
+		isPreviewMode,
+		clientId,
+		getBlockAttributes,
+		updateBlockAttributes,
+	] );
+
+	// In preview/example mode the Stripe status fetch is skipped, so fall back to
+	// a valid currency to render a representative form.
+	const effectiveProps =
+		isPreviewMode && ! currency
+			? { ...props, attributes: { ...attributes, currency: 'USD' } }
+			: props;
+
+	let content;
+
+	if ( ! isPreviewMode && ! isUserConnected ) {
+		content = (
+			<ConnectBanner
+				block="Donations Form"
+				explanation={ __( 'Connect your WordPress.com account to enable donations.', 'jetpack' ) }
+			/>
+		);
+	} else if ( ! isPreviewMode && loadingError ) {
+		content = <LoadingError error={ loadingError } />;
+	} else if ( ! isPreviewMode && stripeConnectUrl ) {
+		// Need to connect Stripe first
+		content = <StripeNudge blockName="donations" />;
+	} else if ( ! isPreviewMode && ! currency ) {
+		// Memberships settings are still loading
+		content = <Spinner />;
+	} else if ( displayMode === 'modal' ) {
+		const triggerIconEntry = TRIGGER_ICONS.find( ( { key } ) => key === triggerIcon );
+		const triggerLabel = triggerButtonText || __( 'Donate', 'jetpack' );
+		content = (
+			<>
+				<Controls { ...props } />
+				<button
+					className="donations__trigger-button wp-block-button__link"
+					tabIndex={ -1 }
+					aria-hidden="true"
+				>
+					{ triggerIconEntry && triggerIcon !== 'none' && (
+						<Icon className="donations__trigger-icon" icon={ triggerIconEntry.icon } size={ 20 } />
+					) }
+					{ triggerLabel }
+				</button>
+			</>
+		);
+	} else {
+		content = <Tabs { ...effectiveProps } />;
+	}
+
+	return (
+		<div { ...blockProps }>
+			<StyleControls attributes={ attributes } setAttributes={ setAttributes } />
+			{ customStyles && <style>{ customStyles }</style> }
+			{ content }
+		</div>
+	);
+};
+
+export default Edit;

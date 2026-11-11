@@ -1,0 +1,125 @@
+@use "../../scss/variables/colors";
+
+#jp-plugin-container {
+	background-color: var(--wpds-color-background-surface-neutral);
+	min-height: calc(100vh - 32px);
+}
+
+.jp-masthead {
+	background-color: var(--wpds-color-background-surface-neutral-strong);
+	border-bottom: var(--wpds-border-width-xs) solid var(--wpds-color-stroke-surface-neutral-weak);
+	padding: var(--wpds-dimension-padding-lg) var(--wpds-dimension-padding-2xl);
+}
+
+.jp-masthead__inside-container {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	min-height: 40px;
+}
+
+.jp-masthead__title-container {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.jp-masthead__logo-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--wpds-dimension-size-sm);
+	height: var(--wpds-dimension-size-sm);
+	flex-shrink: 0;
+	outline: none;
+
+	&:focus {
+		box-shadow: 0 0 0 2px colors.$blue-light;
+		border-radius: 2px;
+	}
+}
+
+.jp-masthead__title {
+	font-family: var(--wpds-typography-font-family-heading);
+	font-size: var(--wpds-typography-font-size-lg);
+	font-weight: var(--wpds-typography-font-weight-emphasis);
+	line-height: var(--wpds-typography-line-height-sm);
+	margin: 0;
+	color: var(--wpds-color-foreground-content-neutral);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.jp-masthead__title-link {
+	color: #1e1e1e;
+	text-decoration: none;
+	font-weight: inherit;
+
+	&:hover,
+	&:focus {
+		color: #1e1e1e;
+		text-decoration: underline;
+	}
+}
+
+.jp-masthead__title-separator {
+	color: #757575;
+	font-weight: 400;
+	margin: 0 4px;
+}
+
+.jp-masthead__title-current {
+	font-weight: 700;
+}
+
+.jp-masthead__nav {
+	display: flex;
+	flex-wrap: nowrap;
+	flex-shrink: 0;
+
+	.dops-button-group {
+		align-self: center;
+
+		/* This fixes an unwanted space between the buttons in the
+		 * network settings caused by a line break. */
+
+		/* Fixed here to keep PHP code readable. It's safe:
+		 * .dops-button and .dops-button.is-compact specify a font size. */
+		font-size: 0;
+	}
+
+	.dops-button {
+		background: colors.$white;
+		color: colors.$black;
+		font-weight: 600;
+		border: 1.5px solid colors.$black;
+		box-shadow: none;
+
+		&:first-child {
+			border-inline-end: 0;
+		}
+
+		&.is-primary {
+			background: colors.$black;
+			color: #fff;
+			border: 1.5px solid colors.$black;
+
+			&:last-child {
+				border-inline-start: 0;
+			}
+		}
+	}
+}
+
+#sandbox-domain-badge {
+	background: #d63638;
+	text-transform: uppercase;
+	letter-spacing: 0.2em;
+	text-shadow: none;
+	font-size: 9px;
+	font-weight: 700;
+	cursor: pointer;
+	color: #fff;
+}

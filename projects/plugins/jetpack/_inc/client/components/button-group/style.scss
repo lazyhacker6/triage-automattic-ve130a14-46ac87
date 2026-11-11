@@ -1,0 +1,50 @@
+@use "sass:color";
+@use "../../scss/z-index";
+@use "../../scss/calypso-colors";
+
+.dops-button-group {
+
+	.dops-button {
+		border-inline-start-width: 0;
+		border-radius: 0;
+
+		&:focus {
+			// fixes focus styles in stacking context
+			position: relative;
+			z-index: z-index.z-index("button-group-parent", ".button-group .button:focus");
+		}
+
+		&.is-primary:focus {
+			box-shadow:
+				0 0 0 1px calypso-colors.$white,
+				0 0 0 3px calypso-colors.$blue-medium-dark;
+		}
+
+		&.is-scary:focus {
+			box-shadow: inset 1px 0 0 calypso-colors.$alert-red, 0 0 0 2px color.adjust(calypso-colors.$alert-red, $lightness: 20%);
+		}
+
+		&.is-primary.is-scary:focus {
+			box-shadow: inset 1px 0 0 color.adjust(calypso-colors.$alert-red, $lightness: -30%), 0 0 0 2px color.adjust(calypso-colors.$alert-red, $lightness: 20%);
+		}
+
+		&.is-scary:first-child:focus {
+			box-shadow: 0 0 0 2px color.adjust(calypso-colors.$alert-red, $lightness: 20%);
+		}
+	}
+
+	.dops-button:first-child {
+		border-inline-start-width: 1px;
+		border-start-start-radius: 4px;
+		border-end-start-radius: 4px;
+	}
+
+	.dops-button:last-child {
+		border-start-end-radius: 4px;
+		border-end-end-radius: 4px;
+	}
+
+	.dops-section-header & .dops-button {
+		margin-inline-end: 0;
+	}
+}

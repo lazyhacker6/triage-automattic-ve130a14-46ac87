@@ -1,0 +1,360 @@
+/**
+ * External dependencies
+ */
+import { useReportScope, type LockableInterval } from '@jetpack-premium-analytics/data';
+import {
+	isComparisonPresetId,
+	isPrimaryPreset,
+	type ComparisonPresetId,
+	type IntervalType,
+	type PrimaryPresetId,
+	type QuickSurfacePresetId,
+	type StepDirection,
+} from '@jetpack-premium-analytics/datetime';
+import { Stack } from '@jetpack-premium-analytics/externals';
+import { BaseControl } from '@wordpress/components';
+import { useMemo, useCallback, useState } from 'react';
+/**
+ * Internal dependencies
+ */
+import { DateComparisonDropdown } from '../date-comparison-dropdown';
+import { DateIntervalDropdown } from '../date-interval-dropdown';
+import { DateLimitUpsell } from '../date-limit-upsell';
+import { DatePeriodDropdown } from '../date-period-dropdown';
+import { DatePeriodNavigation } from '../date-period-navigation';
+import { useComparisonDatePresets } from '../use-comparison-date-presets';
+import type { DateControlTriggerProps } from '../utils/date-control-trigger';
+
+import './date-filters-panel.scss';
+
+type DatePeriodDropdownProps = Parameters< typeof DatePeriodDropdown >[ 0 ];
+
+export type DateRange = DatePeriodDropdownProps[ 'range' ];
+
+/**
+ * The step the arrows offer, and whether each has somewhere to go, as the date
+ * filters decided it: the plan's earliest date behind, a window that has begun
+ * ahead. An arrow with nowhere to go is disabled, not hidden.
+ */
+export type DateStepping = {
+	onStep: ( direction: StepDirection ) => void;
+	canStepBackward: boolean;
+	canStepForward: boolean;
+};
+
+export type DateFiltersPanelProps = {
+	range: DateRange;
+
+	/**
+	 * The applied (committed) preset ID, which names the picker's trigger. The
+	 * draft's own preset travels back out through `onChange` and never in: a
+	 * control naming it would rename itself to a range nothing has applied.
+	 */
+	appliedPresetId?: PrimaryPresetId;
+
+	/**
+	 * The applied (committed) date range. Used to label the picker's trigger
+	 * while the popover is closed. Falls back to `range` when omitted.
+	 */
+	appliedRange?: DateRange;
+
+	/**
+	 * The current comparison preset ID (e.g., 'previous-period', 'previous-month').
+	 */
+	comparisonPresetId?: ComparisonPresetId;
+
+	/**
+	 * The periods the menu offers. Defaults to every selectable preset; a detail
+	 * or report page adds all time (`MENU_SURFACE_PRESETS_WITH_ALL_TIME`). The menu keeps
+	 * its own order whatever order they arrive in, so its grouping by scale holds.
+	 */
+	presetIds?: readonly QuickSurfacePresetId[];
+
+	/**
+	 * Where all time starts, e.g. the resource's publish date. Only read when
+	 * `presetIds` includes it.
+	 */
+	allTimeStart?: Date;
+
+	/** Whether WPCOM picks where all time starts; see `DatePeriodDropdown`. */
+	allTimeStartsOnServer?: boolean;
+
+	/**
+	 * Whether to offer Custom range at the end of the menu. On by default; a
+	 * surface whose design lists common periods only turns it off.
+	 */
+	withCustomRange?: boolean;
+
+	/**
+	 * Whether to render the chart interval control. Off by default: only a
+	 * surface whose contents are bucketed by it — one carrying charts rather
+	 * than a records table — should offer it.
+	 */
+	withIntervalControl?: boolean;
+
+	/**
+	 * The chart interval the control shows as checked. Resolved against the range
+	 * being edited, so an open draft can move it off the applied one.
+	 */
+	interval?: IntervalType;
+
+	/**
+	 * The buckets to list, finest first. Derived upstream from the range and, for
+	 * a widget that owns its control, from what its chart draws.
+	 */
+	intervalOptions?: readonly IntervalType[];
+
+	/** The buckets the range would allow but the plan locks, listed with a lock. */
+	lockedIntervalOptions?: readonly LockableInterval[];
+
+	onChange: DatePeriodDropdownProps[ 'onChange' ];
+
+	onComparisonChange: ( range: DateRange | undefined, presetId?: ComparisonPresetId ) => void;
+
+	onIntervalChange?: ( interval: IntervalType ) => void;
+
+	/**
+	 * The arrows that step the applied window by its own length. Left out, they
+	 * are not rendered at all: a surface whose range is not a movable window has
+	 * nowhere to step.
+	 */
+	stepping?: DateStepping;
+
+	/**
+	 * Props for the date range popover.
+	 */
+	rangeControlProps?: Omit< Parameters< typeof BaseControl >[ 0 ], 'children' >;
+
+	/**
+	 * Props for the date comparison dropdown. A string `label` renders as the
+	 * comparison select's own visible label instead of a BaseControl label.
+	 */
+	comparisonControlProps?: Omit< Parameters< typeof BaseControl >[ 0 ], 'children' >;
+
+	onApply: DatePeriodDropdownProps[ 'onApply' ];
+
+	onCancel: DatePeriodDropdownProps[ 'onCancel' ];
+
+	canApply?: boolean;
+
+	/**
+	 * IANA timezone string (e.g., 'America/New_York', 'Europe/London').
+	 * Required for proper date/time handling.
+	 */
+	timeZone: string;
+
+	/**
+	 * Greys every control out but keeps them focusable, for a surface busy
+	 * elsewhere: the dashboard while its layout is being customized.
+	 */
+	disabled?: boolean;
+
+	/** The look of every trigger in the row, e.g. compact in a widget header. */
+	triggerProps?: DateControlTriggerProps;
+
+	/** Passed to the period trigger; see `DatePeriodDropdown`. */
+	attentionId?: DatePeriodDropdownProps[ 'attentionId' ];
+};
+
+/**
+ * Container for the primary date range picker and the comparison dropdown. It
+ * owns the comparison state; children only render.
+ */
+export function DateFiltersPanel( {
+	range,
+	appliedPresetId,
+	appliedRange,
+	comparisonPresetId,
+	presetIds,
+	allTimeStart,
+	allTimeStartsOnServer,
+	withCustomRange = true,
+	withIntervalControl = false,
+	interval,
+	intervalOptions,
+	lockedIntervalOptions,
+	onChange,
+	onComparisonChange,
+	onIntervalChange,
+	stepping,
+	rangeControlProps = {
+		label: null,
+		help: null,
+	},
+	comparisonControlProps = {
+		label: null,
+		help: null,
+	},
+	onApply,
+	onCancel,
+	canApply = true,
+	timeZone,
+	disabled = false,
+	triggerProps,
+	attentionId,
+}: DateFiltersPanelProps ) {
+	/*
+	 * Read rather than a prop, so this and the widgets share one declaration —
+	 * a header can never offer a comparison the widgets below aren't fetching.
+	 */
+	const { offersComparison, dateLimits } = useReportScope();
+
+	// Unknown values (e.g. garbage from the URL) become undefined, which the
+	// dropdown reads as the custom preset.
+	const validatedAppliedPresetId = useMemo( () => {
+		if ( ! appliedPresetId ) {
+			return undefined;
+		}
+		return isPrimaryPreset( appliedPresetId ) ? appliedPresetId : undefined;
+	}, [ appliedPresetId ] );
+
+	const validatedComparisonPresetId = useMemo( () => {
+		return isComparisonPresetId( comparisonPresetId ) ? comparisonPresetId : undefined;
+	}, [ comparisonPresetId ] );
+
+	const comparisonEnabled = !! validatedComparisonPresetId;
+
+	/*
+	 * The draft's preset, caught on its way out through `onChange`. Cleared on
+	 * every open and close, so the comparison previews only a draft the picker
+	 * has staged, measured by that draft's own preset.
+	 */
+	const [ draft, setDraft ] = useState< { presetId?: PrimaryPresetId } | null >( null );
+	const comparisonSourceRange = draft ? range : ( appliedRange ?? range );
+	const comparisonSourcePresetId = draft ? draft.presetId : validatedAppliedPresetId;
+	const presets = useComparisonDatePresets( comparisonSourceRange, comparisonSourcePresetId );
+
+	const stageDraft = useCallback(
+		( nextRange?: DateRange, nextPresetId?: PrimaryPresetId ) => {
+			setDraft( { presetId: nextPresetId } );
+			onChange( nextRange, nextPresetId );
+		},
+		[ onChange ]
+	);
+
+	const clearDraft = useCallback( () => setDraft( null ), [] );
+
+	const presetChange = useCallback(
+		( id: ComparisonPresetId ) => {
+			const nextPreset = presets.find( p => p.id === id );
+			onComparisonChange( nextPreset?.range, id );
+		},
+		[ onComparisonChange, presets ]
+	);
+
+	const clearComparison = useCallback( () => {
+		onComparisonChange( undefined, undefined );
+	}, [ onComparisonChange ] );
+
+	const comparisonLabel =
+		typeof comparisonControlProps.label === 'string' ? comparisonControlProps.label : undefined;
+
+	const comparisonControl = useMemo(
+		() => (
+			<DateComparisonDropdown
+				presets={ presets }
+				enabled={ comparisonEnabled }
+				presetId={ validatedComparisonPresetId }
+				label={ comparisonLabel }
+				disabled={ disabled }
+				triggerProps={ triggerProps }
+				onPresetChange={ presetChange }
+				onClear={ clearComparison }
+			/>
+		),
+		[
+			clearComparison,
+			comparisonEnabled,
+			comparisonLabel,
+			disabled,
+			presetChange,
+			presets,
+			triggerProps,
+			validatedComparisonPresetId,
+		]
+	);
+
+	const navigationControl = useMemo(
+		() => ( stepping ? <DatePeriodNavigation { ...stepping } disabled={ disabled } /> : null ),
+		[ disabled, stepping ]
+	);
+
+	const intervalControl = useMemo(
+		() =>
+			withIntervalControl && intervalOptions && onIntervalChange ? (
+				<DateIntervalDropdown
+					options={ intervalOptions }
+					lockedOptions={ lockedIntervalOptions }
+					lockUpsell={ dateLimits?.intervalUpsell }
+					value={ interval }
+					disabled={ disabled }
+					triggerProps={ triggerProps }
+					onChange={ onIntervalChange }
+				/>
+			) : null,
+		[
+			withIntervalControl,
+			interval,
+			intervalOptions,
+			lockedIntervalOptions,
+			dateLimits?.intervalUpsell,
+			disabled,
+			triggerProps,
+			onIntervalChange,
+		]
+	);
+
+	return (
+		<div className="date-filters-panel">
+			<Stack className="date-filters-panel__row" direction="row" gap="sm">
+				{ navigationControl }
+
+				<BaseControl
+					className="date-filters-panel__primary"
+					label={ rangeControlProps.label }
+					id="date-range-popover-button"
+					help={ rangeControlProps.help }
+				>
+					<DatePeriodDropdown
+						appliedPresetId={ validatedAppliedPresetId }
+						appliedRange={ appliedRange ?? range }
+						range={ range }
+						onSelect={ ( nextRange, nextPresetId ) => {
+							onChange( nextRange, nextPresetId );
+							onApply();
+						} }
+						onChange={ stageDraft }
+						onApply={ onApply }
+						onCancel={ onCancel }
+						canApply={ canApply }
+						timeZone={ timeZone }
+						disabled={ disabled }
+						triggerProps={ triggerProps }
+						onOpenChange={ clearDraft }
+						presetIds={ presetIds }
+						allTimeStart={ allTimeStart }
+						allTimeStartsOnServer={ allTimeStartsOnServer }
+						withCustomRange={ withCustomRange }
+						attentionId={ attentionId }
+						lockedPresetIds={ dateLimits?.lockedPresetIds }
+						earliestDate={ dateLimits?.earliestDate }
+						lockNotice={ dateLimits?.upsell && <DateLimitUpsell upsell={ dateLimits.upsell } /> }
+					/>
+				</BaseControl>
+
+				{ /* Comparison before the interval: it qualifies the range the
+				     presets just set, while the interval only buckets the charts. */ }
+				{ offersComparison && (
+					<BaseControl
+						className="date-filters-panel__comparison"
+						help={ comparisonControlProps.help }
+					>
+						{ comparisonControl }
+					</BaseControl>
+				) }
+
+				{ intervalControl }
+			</Stack>
+		</div>
+	);
+}

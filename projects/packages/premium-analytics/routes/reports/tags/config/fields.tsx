@@ -1,0 +1,67 @@
+/**
+ * External dependencies
+ */
+import { Icon } from '@jetpack-premium-analytics/externals';
+import { formatMetricValue } from '@jetpack-premium-analytics/formatters';
+import { safeHttpUrl, tagRowGlyph } from '@jetpack-premium-analytics/ui';
+import { ExternalLink } from '@jetpack-premium-analytics/widgets-toolkit';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import styles from './fields.module.css';
+import type { StatsTagsItem } from '@jetpack-premium-analytics/data';
+import type { Field } from '@jetpack-premium-analytics/externals';
+
+/**
+ * Render the label cell for a Tags report row.
+ *
+ * @param props      - Component props.
+ * @param props.item - The Tags report item.
+ * @return The label cell.
+ */
+function TagLabel( { item }: { item: StatsTagsItem } ) {
+	const labelIcon = item.label[ 0 ]?.labelIcon ?? '';
+	const href = safeHttpUrl( item.link );
+
+	return (
+		<span className={ styles.tagLabel }>
+			<Icon icon={ tagRowGlyph( labelIcon ) } size={ 20 } className={ styles.tagIcon } />
+			{ href ? (
+				<ExternalLink href={ href } title={ item.labelText } className={ styles.tagText }>
+					{ item.labelText }
+				</ExternalLink>
+			) : (
+				<span title={ item.labelText } className={ styles.tagText }>
+					{ item.labelText }
+				</span>
+			) }
+		</span>
+	);
+}
+
+/**
+ * DataViews field config for the Tags & categories records table.
+ *
+ * @return The field config.
+ */
+export function getTagsFields(): Field< StatsTagsItem >[] {
+	return [
+		{
+			id: 'label',
+			label: __( 'Tag or category', 'jetpack-premium-analytics-pkg' ),
+			enableGlobalSearch: true,
+			enableHiding: false,
+			getValue: ( { item } ) => item.labelText,
+			render: ( { item } ) => <TagLabel item={ item } />,
+		},
+		{
+			id: 'views',
+			label: __( 'Views', 'jetpack-premium-analytics-pkg' ),
+			getValue: ( { item } ) => item.value,
+			render: ( { item } ) => (
+				<>{ formatMetricValue( item.value, 'number', { decimals: 0, useMultipliers: false } ) }</>
+			),
+		},
+	];
+}

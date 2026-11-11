@@ -1,0 +1,97 @@
+packages:
+  - projects/*/*
+  - '!projects/js-packages/jetpack-cli'
+  - projects/plugins/*/tests/e2e
+  - tools/cli
+  - tools/e2e-commons
+  - tools/e2e-commons/no-lighthouse
+  - tools/js-tools
+  - tools/performance
+  - tools/port-verification
+  - .github/files/coverage-munger
+
+engineStrict: true
+pmOnFail: ignore
+preferWorkspacePackages: true
+
+# Feature is buggy in pnpm 11.5, e.g. https://github.com/pnpm/pnpm/issues/12100.
+optimisticRepeatInstall: false
+
+# Be strict about peer deps
+autoInstallPeers: false
+dedupePeerDependents: false
+dedupePeers: false
+strictPeerDependencies: true
+
+# No hoisting by default.
+hoistPattern: []
+
+# Silence this warning. Our `jetpack dependencies build-order` (also used by `jetpack build --all`) checks for cycles itself, plus it has a way to indicate that a dep is only for testing.
+ignoreWorkspaceCycles: true
+
+# Package compromise avoidance: let new releases age a day, and don't allow trust downgrades unless explicitly excepted.
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  # Packages we often want to immediately update after releasing them.
+  - '@automattic/*'
+  - '@gravatar-com/*'
+  - '@woocommerce/*'
+  - '@wordpress/*'
+  - 'gridicons'
+  - 'wpcom-proxy-request'
+  # Renovate security update: zod@4.6.6
+  - zod@4.6.6
+
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  # https://github.com/paulmillr/chokidar/issues/1440
+  - chokidar@4.0.3
+
+  # Packages where newer majors have provenance but we're still on an older one.
+  - rxjs@7.8.2
+
+# Package compromise avoidance: require dep build script approval.
+strictDepBuilds: true
+verifyDepsBeforeRun: install
+allowBuilds:
+  # Tries to download/install stuff if optional deps weren't installed.
+  esbuild: false
+  unrs-resolver: false
+  # Tries to rebuild itself if an environment variable is set.
+  '@parcel/watcher': false
+  # Attempt to show "support me" spam.
+  core-js: false
+  core-js-pure: false
+  print-this: false
+
+# Package compromise avoidance: Block odd protocols in subdeps
+blockExoticSubdeps: true
+
+# Some optional dependencies we don't actually need.
+ignoredOptionalDependencies:
+  - sass-embedded-all-unknown # Brings in `sass`; platforms we support should have a binary package instead of this.
+  - sass-embedded-unknown-all # Brings in `sass`; platforms we support should have a binary package instead of this.
+
+audit:
+  ignore:
+    # Maintainer of various eslint plugins seems unwilling to upgrade from minimatch v3, and this one isn't going to be backported. Sigh.
+    # https://github.com/import-js/eslint-plugin-import/issues/3249
+    # https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/issues/1054
+    # https://github.com/jsx-eslint/eslint-plugin-react/issues/4066
+    - GHSA-g3hv-75wg-m249
+
+# Dependencies needing patching.
+patchedDependencies:
+
+  # The wp-admin page template delegates boot init modules to initSinglePage(),
+  # but WordPress cores bundling an older @wordpress/boot (e.g. WP 7.0) ignore
+  # the option, so init modules never run there. The patch runs them in the
+  # inline bootstrap instead. Remove once the template runs init modules itself
+  # upstream (or Jetpack's WP floor ships a boot with initModules support).
+  # It also restores the `boot-layout-container` class on the mount element,
+  # which those older cores' Boot uses to size the page to the viewport; 0.22.0
+  # dropped it and WordPress/gutenberg#82112 (unreleased) brings it back.
+  # The patch also preloads WordPress 7.1's site-data field list. Keep that preload
+  # until Jetpack's minimum WordPress version requests the @wordpress/build 0.26 list,
+  # even if upstream fixes init-module handling first.
+  "@wordpress/build": .pnpm-patches/@wordpress__build.patch

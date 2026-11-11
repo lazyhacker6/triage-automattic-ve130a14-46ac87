@@ -1,0 +1,210 @@
+import { onlineManager } from '@tanstack/react-query';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { getApiFetchMock, mockApiFetch } from '../../test-utils/mock-api-fetch';
+import { createTestQueryClient, createTestWrapper } from '../../test-utils/query-client-wrapper';
+import { useFreeTier } from '../use-free-tier';
+
+jest.mock( '@automattic/jetpack-script-data', () => ( {
+	isWoASite: jest.fn( () => false ),
+	// These suites run in self-hosted mode; Simple-mode suites use the real
+	// module with the JetpackScriptData global via test-utils/simple-site.
+	isSimpleSite: jest.fn( () => false ),
+} ) );
+
+jest.mock( '../use-upload', () => ( {
+	useUpload: () => ( {
+		uploadQueue: [ { id: 'a', status: 'uploading', progress: 0.5, file: new File( [], 'a' ) } ],
+		startUpload: jest.fn(),
+		retryUpload: jest.fn(),
+	} ),
+} ) );
+
+describe( 'useFreeTier', () => {
+	beforeAll( () => {
+		( window as unknown as { JPVIDEOPRESS_INITIAL_STATE?: unknown } ).JPVIDEOPRESS_INITIAL_STATE = {
+			siteData: { hasVideoPressAccess: false, isVideoPressUnlimited: false },
+		};
+	} );
+
+	it( 'counts completed (from totalItems) + in-flight uploads', async () => {
+		mockApiFetch( async ( { parse } ) => {
+			if ( parse === false ) {
+				return {
+					headers: {
+						get: ( key: string ) => ( key === 'X-WP-Total' ? '0' : '0' ),
+					},
+					json: async () => [],
+				};
+			}
+			// No other endpoints are fetched by this hook anymore.
+			throw new Error( 'unexpected parsed request' );
+		} );
+
+		const { result } = renderHook( () => useFreeTier(), { wrapper: createTestWrapper() } );
+		expect( result.current.knownVideoCount ).toBeUndefined();
+		await waitFor( () => expect( result.current.knownVideoCount ).toBe( 1 ) );
+		await waitFor( () => expect( result.current.videoCountKnown ).toBe( true ) );
+		// 0 completed (server total) + 1 in-flight = 1; free tier limit = 1 → at limit
+		expect( result.current.videoCount ).toBe( 1 );
+		expect( result.current.isAtLimit ).toBe( true );
+	} );
+
+	it( 'keeps the count unknown until the library response arrives', async () => {
+		let resolveResponse: ( value: unknown ) => void;
+		mockApiFetch(
+			() =>
+				new Promise( resolve => {
+					resolveResponse = resolve;
+				} )
+		);
+		const { result } = renderHook( () => useFreeTier(), { wrapper: createTestWrapper() } );
+		expect( result.current.videoCountKnown ).toBe( false );
+		await act( async () =>
+			resolveResponse( {
+				headers: { get: ( key: string ) => ( key === 'X-WP-Total' ? '3' : '1' ) },
+				json: async () => [],
+			} )
+		);
+		await waitFor( () => expect( result.current.videoCountKnown ).toBe( true ) );
+		expect( result.current.videoCount ).toBe( 4 );
+	} );
+
+	it( 'does not report a fallback count as known after a failed library request', async () => {
+		const api = mockApiFetch( async () => {
+			throw new Error( 'Library unavailable' );
+		} );
+		const client = createTestQueryClient();
+		const { result } = renderHook( () => useFreeTier(), { wrapper: createTestWrapper( client ) } );
+		await waitFor( () => {
+			expect( api ).toHaveBeenCalled();
+			expect( client.isFetching() ).toBe( 0 );
+		} );
+		expect( result.current.videoCountKnown ).toBe( false );
+	} );
+
+	it( 'keeps an initially offline count unknown until the paused request succeeds', async () => {
+		const wasOnline = onlineManager.isOnline();
+		const api = mockApiFetch( async () => ( {
+			headers: { get: ( key: string ) => ( key === 'X-WP-Total' ? '3' : '1' ) },
+			json: async () => [],
+		} ) );
+		const client = createTestQueryClient();
+		onlineManager.setOnline( false );
+		const { result, unmount } = renderHook( () => useFreeTier(), {
+			wrapper: createTestWrapper( client ),
+		} );
+		try {
+			expect( client.getQueryCache().getAll()[ 0 ].state.fetchStatus ).toBe( 'paused' );
+			expect( api ).not.toHaveBeenCalled();
+			expect( result.current.videoCountKnown ).toBe( false );
+			await act( async () => onlineManager.setOnline( true ) );
+			await waitFor( () => expect( result.current.videoCountKnown ).toBe( true ) );
+			expect( result.current.videoCount ).toBe( 4 );
+		} finally {
+			unmount();
+			client.clear();
+			onlineManager.setOnline( wasOnline );
+		}
+	} );
+
+	it.each( [ null, undefined ] )(
+		'keeps unavailable access (%s) unknown with four videos',
+		async access => {
+			const win = window as unknown as { JPVIDEOPRESS_INITIAL_STATE: { siteData: unknown } };
+			const previousSiteData = win.JPVIDEOPRESS_INITIAL_STATE.siteData;
+			win.JPVIDEOPRESS_INITIAL_STATE.siteData = {
+				hasVideoPressAccess: access,
+				isVideoPressUnlimited: null,
+			};
+			mockApiFetch( async () => ( {
+				headers: { get: ( key: string ) => ( key === 'X-WP-Total' ? '3' : '1' ) },
+				json: async () => [],
+			} ) );
+
+			try {
+				const { result } = renderHook( () => useFreeTier(), { wrapper: createTestWrapper() } );
+				await waitFor( () => expect( result.current.videoCount ).toBe( 4 ) );
+				expect( result.current.isFree ).toBeNull();
+				expect( result.current.isAtLimit ).toBe( false );
+			} finally {
+				win.JPVIDEOPRESS_INITIAL_STATE.siteData = previousSiteData;
+			}
+		}
+	);
+
+	// Regression: an unlimited (grandfathered) plan must never be reported as
+	// at the limit, even when the counted videos reach the free-tier cap.
+	// `isFree` and `isUnlimited` come from independent signals, so `isAtLimit`
+	// must explicitly exclude unlimited.
+	it( 'is not at the limit on an unlimited plan even at the nominal cap', async () => {
+		const win = window as unknown as {
+			JPVIDEOPRESS_INITIAL_STATE: { siteData: unknown };
+		};
+		const previousSiteData = win.JPVIDEOPRESS_INITIAL_STATE.siteData;
+		win.JPVIDEOPRESS_INITIAL_STATE.siteData = {
+			hasVideoPressAccess: false,
+			isVideoPressUnlimited: true,
+		};
+
+		mockApiFetch( async ( { parse } ) => {
+			if ( parse === false ) {
+				return {
+					headers: { get: ( key: string ) => ( key === 'X-WP-Total' ? '0' : '0' ) },
+					json: async () => [],
+				};
+			}
+			throw new Error( 'unexpected parsed request' );
+		} );
+
+		try {
+			const { result } = renderHook( () => useFreeTier(), { wrapper: createTestWrapper() } );
+			// 0 completed + 1 in-flight = 1, which equals the free-tier cap…
+			await waitFor( () => expect( result.current.videoCount ).toBe( 1 ) );
+			expect( result.current.isUnlimited ).toBe( true );
+			// …but an unlimited plan is never gated.
+			expect( result.current.isAtLimit ).toBe( false );
+		} finally {
+			win.JPVIDEOPRESS_INITIAL_STATE.siteData = previousSiteData;
+		}
+	} );
+
+	// Regression: the listing call that drives the free-tier count must
+	// restrict to VideoPress-hosted videos (`mime_type=video/videopress`).
+	// Without the filter, local video attachments were counted toward the
+	// free-tier upload cap and falsely gated a free user's first upload.
+	it( 'counts only VideoPress-hosted videos, not local attachments', async () => {
+		mockApiFetch( async ( { parse } ) => {
+			if ( parse === false ) {
+				return {
+					headers: {
+						get: ( key: string ) => ( key === 'X-WP-Total' ? '0' : '0' ),
+					},
+					json: async () => [],
+				};
+			}
+			return {
+				isVideoPressSupported: true,
+				isVideoPress1TBSupported: false,
+				isVideoPressUnlimitedSupported: false,
+			};
+		} );
+
+		renderHook( () => useFreeTier(), { wrapper: createTestWrapper() } );
+
+		await waitFor( () => {
+			const calls = getApiFetchMock().mock.calls.map(
+				( [ args ] ) => ( args as { path?: string } )?.path ?? ''
+			);
+			expect( calls.some( path => path.includes( '/wp/v2/media' ) ) ).toBe( true );
+		} );
+
+		const mediaPaths = getApiFetchMock()
+			.mock.calls.map( ( [ args ] ) => ( args as { path?: string } )?.path ?? '' )
+			.filter( path => path.includes( '/wp/v2/media' ) );
+		expect( mediaPaths.length ).toBeGreaterThan( 0 );
+		for ( const path of mediaPaths ) {
+			expect( path ).toContain( 'mime_type=video%2Fvideopress' );
+			expect( path ).not.toContain( 'media_type=video' );
+		}
+	} );
+} );

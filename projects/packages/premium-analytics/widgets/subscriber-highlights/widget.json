@@ -1,0 +1,11 @@
+{
+	"name": "jpa/subscriber-highlights",
+	"icon": "jpa/backup",
+	"title": "Subscriber highlights",
+	"description": "Your all-time subscribers and social followers, plus a paid and free breakdown or how many you had 30, 60, and 90 days ago.",
+	"help": {
+		"content": "Your all-time subscribers, plus social followers if you have them. Sites with paid subscribers also see paid and free subscribers; other sites see their count 30, 60, and 90 days ago."
+	},
+	"category": "subscribers",
+	"presentation": "framed"
+}

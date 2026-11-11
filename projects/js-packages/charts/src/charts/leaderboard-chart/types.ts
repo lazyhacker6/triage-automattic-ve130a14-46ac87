@@ -1,0 +1,99 @@
+import { type ReactNode } from 'react';
+import { BaseChartProps, LeaderboardEntry } from '../../types';
+
+export interface LeaderboardChartProps extends Pick<
+	BaseChartProps< LeaderboardEntry >,
+	| 'className'
+	| 'showLegend'
+	| 'legend'
+	| 'chartId'
+	| 'width'
+	| 'height'
+	| 'size'
+	| 'gap'
+	| 'animation'
+	| 'ariaLabel'
+> {
+	/**
+	 * Entries to display. Declared here rather than picked, since the base type
+	 * would split the entry union into one array type per member.
+	 */
+	data: LeaderboardEntry[];
+
+	/**
+	 * Whether to show comparison data
+	 */
+	withComparison?: boolean;
+
+	/**
+	 * Whether to overlay the label on top of bar
+	 */
+	withOverlayLabel?: boolean;
+
+	/**
+	 * How a negative value draws: `diverge` puts every row on a shared zero point, `clamp` draws it as an empty bar.
+	 * @default 'diverge'
+	 */
+	negativeBars?: 'diverge' | 'clamp';
+
+	/**
+	 * Primary color for current period bars
+	 */
+	primaryColor?: string;
+
+	/**
+	 * Secondary color for comparison period bars
+	 */
+	secondaryColor?: string;
+
+	/**
+	 * Formatter for values. May return an element, e.g. to attach a tooltip.
+	 */
+	valueFormatter?: ( value: number ) => ReactNode;
+
+	/**
+	 * Formatter for delta values
+	 */
+	deltaFormatter?: ( value: number ) => string;
+
+	/**
+	 * Whether the chart is in loading state
+	 */
+	loading?: boolean;
+
+	/**
+	 * Show only complete rows that fit the chart height instead of scrolling.
+	 *
+	 * Requires a container that constrains the chart's height; otherwise every
+	 * row fits. Refits are debounced with the parent resize on the responsive
+	 * export, so `LeaderboardChartUnresponsive` tracks a live drag more closely.
+	 * @default false
+	 */
+	fitRows?: boolean;
+
+	/**
+	 * Custom styling for the chart container
+	 */
+	style?: React.CSSProperties & {
+		'--a8c-charts-border-radius-leaderboard-bar'?: string;
+	};
+
+	/**
+	 * Custom labels for legend items
+	 */
+	legendLabels?: {
+		/**
+		 * Label for primary period data
+		 */
+		primary?: string;
+		/**
+		 * Label for comparison period data (only used when withComparison is true)
+		 */
+		comparison?: string;
+	};
+
+	/**
+	 * Child components for composition API
+	 */
+	children?: ReactNode;
+}

@@ -1,0 +1,348 @@
+@use "../scss/functions/rem";
+@use "../scss/variables/colors";
+@use "../scss/calypso-colors";
+@use "../scss/mixins/breakpoints";
+@use "../scss/mixins/ui";
+@use "../scss/typography";
+
+.jp-form-google-label-unverified {
+
+	.dops-button {
+		margin: 0 15px;
+
+		@include breakpoints.breakpoint( "<660px" ) {
+			margin-top: 10px;
+			width: 40%;
+		}
+	}
+
+	.jp-form-google-separator {
+		padding: 0.5rem 0;
+
+		@include breakpoints.breakpoint( "<660px" ) {
+			margin: 25px 0 0;
+			display: inline-block;
+		}
+	}
+}
+
+.jp-sitemap-row {
+	display: flex;
+	align-items: center;
+	margin-top: 1rem;
+
+	.dops-clipboard-button-input {
+		flex-grow: 1;
+	}
+
+	.components-external-link__icon {
+		width: 1.125rem;
+		height: 1.125rem;
+		margin-inline-start: 6px;
+		margin-top: -3px;
+	}
+}
+
+// we want to place.jp-form-input-with-prefix's margin after this element
+.jp-form-input-with-prefix-bottom-message {
+	top: rem.convert(-20px);
+	position: relative;
+	// stylelint-disable-next-line declaration-property-unit-allowed-list -- this should be changed to a unitless value: https://developer.wordpress.org/coding-standards/wordpress-coding-standards/css/#values
+	line-height: 2em;
+	margin-top: 5px;
+}
+
+.jp-form-site-verification-verified {
+	background-color: colors.$white;
+	color: colors.$green-primary;
+	box-sizing: border-box;
+	margin: 0;
+	padding: 7px 14px;
+	font-size: 16px;
+	line-height: 1.5;
+	border: 1px solid #c8d7e1;
+	width: 100%;
+	display: flex;
+	flex-direction: row;
+	justify-content: left;
+	align-items: center;
+
+	.gridicon:first-child {
+		margin-inline-end: 5px;
+	}
+
+	@include breakpoints.breakpoint( ">660px" ) {
+		border-inline-start: 0;
+	}
+
+	@include breakpoints.breakpoint( "<660px" ) {
+		border-top: 0;
+	}
+}
+
+.jp-form-site-verification-edit-button {
+	margin-inline-start: 10px;
+	overflow: visible;
+
+	@include breakpoints.breakpoint( "<660px" ) {
+		margin-inline-start: 0;
+		margin-inline-end: 5px;
+		margin-top: 5px;
+	}
+}
+
+.jp-form-site-verification-buttons {
+	flex: 0 1 20em;
+	display: inline-flex;
+}
+
+.jp-form-site-verification-verified-note {
+	font-size: 0.7em;
+}
+
+.jp-form-google-label-unverified-actions {
+	display: flex;
+	align-content: center;
+
+	.dops-button {
+		margin-inline-start: rem.convert(8px);
+		margin-inline-end: rem.convert(8px);
+
+		&:first-child {
+			margin-inline-start: 0;
+		}
+
+		&:last-child {
+			margin-inline-end: 0;
+		}
+	}
+}
+
+#jp-seo-front-page-description {
+	min-height: 96px;
+}
+
+.jp-seo-front-page-description {
+
+	&-card {
+		margin-bottom: 0 !important;
+	}
+
+	&-container {
+		background: colors.$gray-light;
+		border-radius: 4px;
+	}
+
+	&-count {
+		padding: 0.25rem;
+	}
+
+	&-count-warn {
+		background-color: colors.$alert-yellow;
+		font-weight: typography.$bold;
+		border-radius: 4px;
+	}
+
+	&-count-max {
+		background-color: colors.$alert-red;
+		font-weight: typography.$bold;
+		border-radius: 4px;
+		color: #fff;
+	}
+
+	&-save-button {
+		display: flex;
+		justify-content: end;
+		margin-top: 0.75rem;
+	}
+}
+
+$previews-max-width: 550px;
+$twitter-pofile-image-padding: 17px;
+
+.jp-seo-social-previews {
+	margin-bottom: 0;
+
+	.search-preview,
+	.facebook-preview__post,
+	.twitter-preview__wrapper {
+		margin-top: 1rem;
+		margin-bottom: 1rem;
+		// Avoid center alignment of the preview.
+		margin-inline: 0;
+		max-width: $previews-max-width;
+	}
+
+	.twitter-preview__wrapper {
+		// Remove padding for twitter preview
+		padding: 0;
+		// Compensate for the padding for profile image
+		margin-inline-start: -$twitter-pofile-image-padding;
+		// Add the extra width lost for the profile image
+		max-width: $previews-max-width + $twitter-pofile-image-padding;
+	}
+
+	&-container {
+		display: flex;
+		align-items: center;
+		margin-top: 1rem;
+	}
+
+	&-label {
+		font-weight: 600;
+		margin-inline-start: 0.5rem;
+	}
+}
+
+.jp-seo-custom-titles {
+
+	&-card {
+		margin-bottom: 0 !important;
+	}
+
+	&-input[type="text"] {
+		margin-top: 0.25rem;
+	}
+
+	&-input-controls {
+		display: flex;
+		align-items: flex-end;
+		flex-wrap: wrap;
+		margin-top: 0.5rem;
+
+		.jp-form-label {
+			margin-bottom: 0;
+			font-weight: 600;
+		}
+	}
+
+	&-input-label {
+		margin-inline-end: auto;
+	}
+
+	&-input-button::before {
+		content: "+";
+		margin-inline-end: 4px;
+	}
+
+	&-input-button:not(:first-of-type) {
+		margin-inline-start: 0.5rem;
+	}
+
+	&-input-preview {
+		margin-top: 0.25rem;
+		font-style: italic;
+	}
+
+	&-save-button {
+		display: flex;
+		justify-content: end;
+		margin-top: 0.75rem;
+	}
+}
+
+.jp-seo-yoast-promo-banner {
+	// Overwrites of dops-banner styles for purposes of Yoast ad
+	border-inline-start-color: #a3286a !important;
+
+	.dops-banner__icon-plan {
+
+		> img {
+			height: 32px;
+		}
+	}
+}
+
+
+#jp-settings-site-stats .jp-foldable-settings-standalone .jp-form-settings-group .jp-support-info {
+	top: 1em;
+}
+
+// site-stats.jsx still renders these classes for the inactive-Stats state.
+.jp-at-a-glance__stats-card {
+	padding: 0;
+
+	@include ui.dashboard-card-shadow;
+	margin-bottom: 24px;
+
+	.jp-link-button {
+		background: colors.$white;
+		border: none;
+		padding: 2px 0;
+	}
+}
+
+.jp-at-a-glance__stats-inactive {
+	padding: rem.convert(16px);
+
+	@include breakpoints.breakpoint( ">660px" ) {
+		display: flex;
+		flex-wrap: nowrap;
+		flex-direction: row;
+		align-items: center;
+	}
+}
+
+.jp-at-a-glance__stats-inactive-icon {
+	padding: 0;
+	display: flex;
+	flex-grow: 0;
+
+	@include breakpoints.breakpoint( "<660px" ) {
+		display: none;
+	}
+}
+
+.jp-at-a-glance__stats-inactive-text {
+	font-size: typography.$font-body-small;
+	line-height: 1.5;
+	letter-spacing: -0.3px;
+	color: calypso-colors.$gray-80;
+	flex-grow: 1;
+
+	h3 {
+		margin: 0;
+		font-size: 15px;
+		font-weight: 700;
+		// stylelint-disable-next-line declaration-property-unit-allowed-list -- this should be changed to a unitless value: https://developer.wordpress.org/coding-standards/wordpress-coding-standards/css/#values
+		line-height: 136%;
+		color: colors.$black;
+	}
+
+	@include breakpoints.breakpoint( "<660px" ) {
+		padding: 0 0 rem.convert(16px);
+	}
+
+	@include breakpoints.breakpoint( ">660px" ) {
+		flex-basis: 50%;
+		padding: 0 rem.convert(16px);
+	}
+}
+
+.jp-at-a-glance__stats-inactive-button {
+	text-align: start;
+
+	button.dops-button.is-primary {
+		padding: 4px 20px;
+		font-size: typography.$font-body-small;
+
+		&:focus {
+			border: 1px solid colors.$white;
+			box-shadow: 0 0 0 1px colors.$black;
+		}
+	}
+
+	@include breakpoints.breakpoint( ">660px" ) {
+		flex-grow: 0;
+		margin-inline-start: 64px;
+	}
+}
+
+.jp-stats-form-fieldset {
+	margin-bottom: 20px;
+}
+
+// Sits between settings cards, which carry only a bottom margin.
+.jp-seo-optin-banner {
+	margin-block-end: rem.convert(24px);
+}

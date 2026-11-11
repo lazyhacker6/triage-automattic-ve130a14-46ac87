@@ -1,0 +1,87 @@
+@use "@wordpress/base-styles/colors";
+@use "@wordpress/base-styles/variables";
+
+.wp-block-premium-content-container .premium-content-tabs {
+	align-items: center;
+	background: colors.$white;
+	color: colors.$gray-700;
+	display: flex;
+	flex-wrap: wrap;
+	font-family: variables.$default-font;
+	font-size: variables.$default-font-size;
+	position: relative;
+	margin: 0 0 0 -1px;
+	padding: 8px 14px;
+	border: 1px solid colors.$gray-900;
+	border-radius: 2px;
+}
+
+.wp-block-premium-content-container--tab {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	border: none;
+	background: transparent;
+	padding: 5px;
+	margin-inline-end: 5px;
+	text-decoration: none;
+}
+
+.premium-content-tabs > button.edit {
+	margin-inline-start: auto;
+}
+
+.premium-content-wrapper {
+	margin: 0;
+}
+
+/* Subscribe/Login buttons */
+
+.wp-block-buttons .wp-block[data-type="jetpack/recurring-payments"] {
+	--jetpack-payment-buttons-gap: 0.5em;
+
+	display: inline-block;
+	margin: 0 0.5em 0 0;
+	width: auto;
+}
+
+.editor-styles-wrapper
+.wp-block-buttons
+.wp-block[data-type="jetpack/recurring-payments"]
+.wp-block-button:not(.alignleft):not(.alignright) {
+	margin: 0;
+}
+
+%button-outline-style {
+	background-color: unset;
+	color: colors.$gray-800;
+}
+
+.wp-block-premium-content-login-button,
+.wp-block-jetpack-button {
+
+	&.is-style-outline {
+
+		.wp-block-button__link {
+
+			@extend %button-outline-style;
+		}
+	}
+}
+
+/* Hide Stripe nudge from Jetpack payments block */
+
+/* https://github.com/Automattic/wp-calypso/issues/44332 */
+.wp-block-premium-content-container .premium-content-wrapper .jetpack-block-nudge {
+	display: none;
+}
+
+.wp-block-premium-content-login-button {
+	display: inline-block;
+}
+
+.wp-block[data-align="center"] > .wp-block-premium-content-login-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}

@@ -1,0 +1,194 @@
+import apiFetch from '@wordpress/api-fetch';
+import { combineReducers, registerStore } from '@wordpress/data';
+import { apiFetch as apiFetchControls, controls } from '@wordpress/data-controls';
+
+export const DEFAULT_VARIANT = 'tour';
+export const BLANK_CANVAS_VARIANT = 'blank-canvas-tour';
+
+const showWelcomeGuideReducer = ( state = undefined, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_WELCOME_GUIDE_FETCH_STATUS_SUCCESS':
+			return action.response.show_welcome_guide;
+		case 'WPCOM_WELCOME_GUIDE_SHOW_SET':
+			return action.show;
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return undefined;
+		default:
+			return state;
+	}
+};
+
+const welcomeGuideManuallyOpenedReducer = ( state = false, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_WELCOME_GUIDE_SHOW_SET':
+			if ( typeof action.openedManually !== 'undefined' ) {
+				return action.openedManually;
+			}
+			return state;
+
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return false;
+
+		default:
+			return state;
+	}
+};
+
+// TODO: next PR convert file to Typescript to ensure control of tourRating values: null, 'thumbs-up' 'thumbs-down'
+const tourRatingReducer = ( state = undefined, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_WELCOME_GUIDE_TOUR_RATING_SET':
+			return action.tourRating;
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return undefined;
+		default:
+			return state;
+	}
+};
+
+const welcomeGuideVariantReducer = ( state = DEFAULT_VARIANT, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_WELCOME_GUIDE_FETCH_STATUS_SUCCESS':
+			return action.response.variant;
+		case 'WPCOM_HAS_USED_PATTERNS_MODAL':
+			return state === BLANK_CANVAS_VARIANT ? DEFAULT_VARIANT : state;
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return DEFAULT_VARIANT;
+		default:
+			return state;
+	}
+};
+
+const shouldShowFirstPostPublishedModalReducer = ( state = false, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_SET_SHOULD_SHOW_FIRST_POST_PUBLISHED_MODAL':
+			return action.value;
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return false;
+		default:
+			return state;
+	}
+};
+
+const fourForFourEligibleReducer = ( state = false, action ) => {
+	switch ( action.type ) {
+		case 'WPCOM_SET_FOUR_FOR_FOUR_ELIGIBLE':
+			return action.value;
+		case 'WPCOM_WELCOME_GUIDE_RESET_STORE':
+			return false;
+		default:
+			return state;
+	}
+};
+
+const reducer = combineReducers( {
+	welcomeGuideManuallyOpened: welcomeGuideManuallyOpenedReducer,
+	showWelcomeGuide: showWelcomeGuideReducer,
+	tourRating: tourRatingReducer,
+	welcomeGuideVariant: welcomeGuideVariantReducer,
+	shouldShowFirstPostPublishedModal: shouldShowFirstPostPublishedModalReducer,
+	fourForFourEligible: fourForFourEligibleReducer,
+} );
+
+export const actions = {
+	*fetchWelcomeGuideStatus() {
+		const response = yield apiFetchControls( { path: '/wpcom/v2/block-editor/nux' } );
+
+		return {
+			type: 'WPCOM_WELCOME_GUIDE_FETCH_STATUS_SUCCESS',
+			response,
+		};
+	},
+	*fetchShouldShowFirstPostPublishedModal() {
+		const response = yield apiFetchControls( {
+			path: '/wpcom/v2/block-editor/should-show-first-post-published-modal',
+		} );
+
+		return {
+			type: 'WPCOM_SET_SHOULD_SHOW_FIRST_POST_PUBLISHED_MODAL',
+			value: response.should_show_first_post_published_modal,
+		};
+	},
+	setFourForFourEligible: value => ( {
+		type: 'WPCOM_SET_FOUR_FOR_FOUR_ELIGIBLE',
+		value,
+	} ),
+	// Resolves to whether the decision was saved. An opt-in must be saved before
+	// the writer leaves for the Reader, where only opted-in writers can complete.
+	*setFourForFourStatus( status ) {
+		if ( status === 'opted_out' ) {
+			yield { type: 'WPCOM_SET_FOUR_FOR_FOUR_ELIGIBLE', value: false };
+		}
+		try {
+			yield apiFetchControls( {
+				path: '/wpcom/v2/block-editor/four-for-four',
+				method: 'POST',
+				data: { status },
+			} );
+		} catch {
+			return false;
+		}
+		return true;
+	},
+	setShowWelcomeGuide: ( show, { openedManually, onlyLocal } = {} ) => {
+		if ( ! onlyLocal ) {
+			apiFetch( {
+				path: '/wpcom/v2/block-editor/nux',
+				method: 'POST',
+				data: { show_welcome_guide: show },
+			} );
+		}
+
+		return {
+			type: 'WPCOM_WELCOME_GUIDE_SHOW_SET',
+			show,
+			openedManually,
+		};
+	},
+	setTourRating: tourRating => {
+		return { type: 'WPCOM_WELCOME_GUIDE_TOUR_RATING_SET', tourRating };
+	},
+	setUsedPageOrPatternsModal: () => {
+		return { type: 'WPCOM_HAS_USED_PATTERNS_MODAL' };
+	},
+	// The `resetStore` action is only used for testing to reset the
+	// store inbetween tests.
+	resetStore: () => ( {
+		type: 'WPCOM_WELCOME_GUIDE_RESET_STORE',
+	} ),
+};
+
+export const resolvers = {
+	*isFourForFourEligible() {
+		const response = yield apiFetchControls( { path: '/wpcom/v2/block-editor/four-for-four' } );
+		return actions.setFourForFourEligible( !! response.eligible );
+	},
+};
+
+export const selectors = {
+	isWelcomeGuideManuallyOpened: state => state.welcomeGuideManuallyOpened,
+	isWelcomeGuideShown: state => !! state.showWelcomeGuide,
+	isWelcomeGuideStatusLoaded: state => typeof state.showWelcomeGuide !== 'undefined',
+	getTourRating: state => state.tourRating,
+	// the 'modal' variant previously used for mobile has been removed but its slug may still be persisted in local storage
+	getWelcomeGuideVariant: state =>
+		state.welcomeGuideVariant === 'modal' ? DEFAULT_VARIANT : state.welcomeGuideVariant,
+	getShouldShowFirstPostPublishedModal: state => state.shouldShowFirstPostPublishedModal,
+	isFourForFourEligible: state => state.fourForFourEligible,
+};
+
+/**
+ * Register the wpcom-welcome-guide store
+ *
+ * @return {object} The registered store.
+ */
+export function register() {
+	return registerStore( 'automattic/wpcom-welcome-guide', {
+		reducer,
+		actions,
+		selectors,
+		resolvers,
+		controls,
+		persist: true,
+	} );
+}

@@ -1,0 +1,109 @@
+/**
+ * External dependencies
+ */
+import { useStatsPostComments, toPostId } from '@jetpack-premium-analytics/data';
+import { formatRelativeSince } from '@jetpack-premium-analytics/datetime';
+import {
+	SubscriberList,
+	SubscriberListSkeleton,
+	WidgetRoot,
+	WidgetState,
+	useWidgetRootContext,
+	type ReportParamsFieldAttributes,
+	type SubscriberListItem,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { useMemo } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import styles from './style.module.css';
+import type { WidgetRenderProps } from '@wordpress/widget-primitives';
+
+/**
+ * The Latest comments widget has no configurable attributes: it always lists
+ * comments for the post the page is scoped to (via `reportParams.post_id`).
+ */
+export type PostCommentsAttributes = Record< never, never >;
+
+type PostCommentsRenderAttributes = PostCommentsAttributes & Partial< ReportParamsFieldAttributes >;
+type PostCommentsWidgetProps = WidgetRenderProps< PostCommentsRenderAttributes >;
+
+/** How many comments to list. */
+const COMMENTS_SHOWN = 10;
+
+/**
+ * Lists the scoped post's approved comments, newest first.
+ */
+function PostCommentsInner() {
+	const { reportParams } = useWidgetRootContext();
+	const postId = toPostId( reportParams.post_id );
+
+	const { data, isLoading, isFetching, isError, refetch } = useStatsPostComments( {
+		postId,
+		number: COMMENTS_SHOWN,
+	} );
+
+	const items = useMemo< SubscriberListItem[] >(
+		() =>
+			( data?.comments ?? [] ).map( comment => ( {
+				id: comment.ID,
+				name: comment.name,
+				avatarUrl: comment.avatar_URL,
+				// Link the name to the exact comment, rather than the author's
+				// profile, so the row takes readers to the interaction it represents.
+				href: comment.URL,
+				secondaryText: formatRelativeSince( comment.date ),
+			} ) ),
+		[ data ]
+	);
+
+	const isEmpty = postId <= 0 || ( !! data && items.length === 0 );
+
+	return (
+		<div className={ styles.root }>
+			<WidgetState
+				isLoading={ isLoading }
+				isFetching={ isFetching }
+				// `placeholderData` keeps the prior comments on screen, so a transient
+				// refetch failure should not replace them with an error.
+				isError={ ! data && isError }
+				isEmpty={ isEmpty }
+				renderLoading={ <SubscriberListSkeleton rows={ COMMENTS_SHOWN } /> }
+				error={ {
+					description: __(
+						"We couldn't load these comments. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					),
+					actions: [ { label: __( 'Retry', 'jetpack-premium-analytics-pkg' ), onClick: refetch } ],
+				} }
+				empty={ {
+					description:
+						postId <= 0
+							? __(
+									'Open a post or page report to see its comments here.',
+									'jetpack-premium-analytics-pkg'
+								)
+							: __( 'This post has no comments yet.', 'jetpack-premium-analytics-pkg' ),
+				} }
+			>
+				<SubscriberList
+					items={ items }
+					moreCount={ data?.found === undefined ? null : Math.max( 0, data.found - items.length ) }
+				/>
+			</WidgetState>
+		</div>
+	);
+}
+
+/**
+ * The post detail Traffic view's Latest comments card. The list is a lifetime
+ * roster and is not date-scoped.
+ */
+export default function PostComments( { attributes = {} }: PostCommentsWidgetProps ) {
+	return (
+		<WidgetRoot attributes={ attributes }>
+			<PostCommentsInner />
+		</WidgetRoot>
+	);
+}

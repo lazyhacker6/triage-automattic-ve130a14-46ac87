@@ -1,0 +1,47 @@
+@use "@wordpress/base-styles/colors";
+@use "@wordpress/base-styles/mixins";
+
+.customization-section {
+	padding: 1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+	// Allow fieldset to shrink below its content size in grid/flex layouts.
+	min-inline-size: 0;
+
+	@include mixins.break-medium() {
+		overflow-y: auto;
+	}
+
+	legend {
+		color: colors.$gray-700;
+		// Float fixes the default fieldset/legend border and padding issues.
+		float: inline-start;
+		// Prevents height collapse in flex fieldsets.
+		min-block-size: fit-content;
+		// Truncate long legend names with ellipsis.
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	&[data-variant="per-network"] {
+
+		legend {
+			// Hide legend on small screens
+			// for per-network customization.
+			display: none;
+
+			@include mixins.break-medium() {
+				display: block;
+			}
+		}
+	}
+
+	@include mixins.break-medium() {
+
+		&[data-variant="global"] {
+			border-inline-end: 1px solid colors.$gray-200;
+		}
+	}
+}

@@ -1,0 +1,135 @@
+import { CheckboxControl } from '@wordpress/components';
+import { createInterpolateElement, useCallback } from '@wordpress/element';
+import { __, sprintf } from '@wordpress/i18n';
+import { Fieldset, Stack, Text } from '@wordpress/ui';
+import './style.scss';
+import type { RestoreItems } from '../../types/restore';
+
+type Props = {
+	legend: string;
+	legendClassName?: string;
+	value: RestoreItems;
+	onChange: ( next: RestoreItems ) => void;
+};
+
+type ItemKey = keyof RestoreItems;
+
+type ItemDef = {
+	key: ItemKey;
+	label: string;
+	description?: string;
+};
+
+const ITEMS: ItemDef[] = [
+	{ key: 'themes', label: __( 'WordPress themes', 'jetpack-backup-pkg' ) },
+	{ key: 'plugins', label: __( 'WordPress plugins', 'jetpack-backup-pkg' ) },
+	{
+		key: 'roots',
+		label: __( 'WordPress root', 'jetpack-backup-pkg' ),
+		description: __( 'includes wp-config.php and any non-WordPress files', 'jetpack-backup-pkg' ),
+	},
+	{
+		key: 'contents',
+		label: __( 'WP-content directory', 'jetpack-backup-pkg' ),
+		description: __( 'excludes themes, plugins, and uploads', 'jetpack-backup-pkg' ),
+	},
+	{
+		key: 'sqls',
+		label: __( 'Site database', 'jetpack-backup-pkg' ),
+		description: __( 'includes pages and posts', 'jetpack-backup-pkg' ),
+	},
+	{
+		key: 'uploads',
+		label: __( 'Media uploads', 'jetpack-backup-pkg' ),
+		description: __(
+			'you must also select Site database for restored media uploads to appear',
+			'jetpack-backup-pkg'
+		),
+	},
+];
+
+type RowProps = {
+	item: ItemDef;
+	value: RestoreItems;
+	onChange: ( next: RestoreItems ) => void;
+};
+
+/**
+ * Single row of the restore checklist: a checkbox whose label is the bold item
+ * name followed by an optional description in brackets. Lives in its own component so the per-item
+ * `onChange` handler can be memoized via `useCallback` and satisfy
+ * `react/jsx-no-bind`.
+ *
+ * @param props          - Component props.
+ * @param props.item     - The item definition (key, label, optional description).
+ * @param props.value    - Current state of every toggle in the parent checklist.
+ * @param props.onChange - Called with the next state when this row's toggle flips.
+ * @return The rendered row.
+ */
+function ChecklistRow( { item, value, onChange }: RowProps ) {
+	const handleChange = useCallback(
+		( next: boolean ) => onChange( { ...value, [ item.key ]: next } ),
+		[ onChange, value, item.key ]
+	);
+
+	// As in the design, only a row with a description gets the bold name.
+	const label = item.description
+		? createInterpolateElement(
+				sprintf(
+					/* translators: 1: item name, e.g. "Media uploads". 2: short note about what it covers, e.g. "includes pages and posts". */
+					__( '<strong>%1$s</strong> (%2$s)', 'jetpack-backup-pkg' ),
+					item.label,
+					item.description
+				),
+				{ strong: <strong /> }
+			)
+		: item.label;
+
+	return (
+		<div className="jpb-restore-checklist__row">
+			<CheckboxControl
+				checked={ value[ item.key ] }
+				// @ts-expect-error -- CheckboxControl renders nodes in its label; its type says string.
+				label={ label }
+				onChange={ handleChange }
+				__nextHasNoMarginBottom
+			/>
+		</div>
+	);
+}
+
+/**
+ * Six-checkbox toggle list shared by the Restore and Download screens.
+ *
+ * The keys map to `RestoreItems` (themes/plugins/roots/contents/sqls/uploads);
+ * each description follows its label in brackets.
+ *
+ * @param props                 - Component props.
+ * @param props.legend          - The question the checkboxes answer, which names the group.
+ * @param props.legendClassName - Extra class for the legend.
+ * @param props.value           - Current state of each toggle.
+ * @param props.onChange        - Called with the next state when any toggle flips.
+ * @return The rendered checklist.
+ */
+export default function RestoreItemsChecklist( {
+	legend,
+	legendClassName,
+	value,
+	onChange,
+}: Props ) {
+	return (
+		<Fieldset.Root className="jpb-restore-checklist">
+			<Fieldset.Legend
+				className="jpb-restore-checklist__legend jpb-text-muted"
+				render={ <Text className={ legendClassName } /> }
+			>
+				{ legend }
+			</Fieldset.Legend>
+			<Stack direction="column" gap="lg">
+				{ ITEMS.map( item => (
+					<ChecklistRow key={ item.key } item={ item } value={ value } onChange={ onChange } />
+				) ) }
+			</Stack>
+		</Fieldset.Root>
+	);
+}

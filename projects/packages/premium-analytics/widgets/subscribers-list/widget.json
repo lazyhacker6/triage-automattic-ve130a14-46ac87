@@ -1,0 +1,11 @@
+{
+	"name": "jpa/subscribers-list",
+	"icon": "jpa/people",
+	"title": "Latest subscribers",
+	"description": "Your most recent subscribers.",
+	"help": {
+		"content": "Your most recent subscribers."
+	},
+	"category": "subscribers",
+	"presentation": "framed"
+}

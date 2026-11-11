@@ -1,0 +1,1272 @@
+import { act, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { GlobalChartsProvider } from '../../../providers';
+import { buildMonthCalendarHeatmapData } from '../build-month-calendar-data';
+import HeatmapChart, { HeatmapChartUnresponsive } from '../heatmap-chart';
+import type { HeatmapColumn } from '../types';
+
+const mockRefCallback = jest.fn();
+jest.mock( '../../../hooks/use-element-size', () => ( {
+	useElementSize: () => [ mockRefCallback, 500, 300 ],
+} ) );
+
+const data: HeatmapColumn[] = [
+	{ label: 'W1', data: [ { value: 1 }, { value: 2 }, { value: null } ] },
+	{ label: 'W2', data: [ { value: 3 }, { value: 0 }, { value: 4 } ] },
+];
+
+const renderChart = ( props = {} ) =>
+	render(
+		<GlobalChartsProvider>
+			<HeatmapChart width={ 500 } height={ 300 } data={ data } { ...props } />
+		</GlobalChartsProvider>
+	);
+
+describe( 'HeatmapChart', () => {
+	test( 'renders a grid with an accessible label', () => {
+		renderChart();
+		expect( screen.getByRole( 'grid', { name: /heatmap/i } ) ).toBeInTheDocument();
+	} );
+
+	test( 'renders one cell per data point', () => {
+		renderChart();
+		// 2 columns x 3 rows = 6 cells
+		expect( screen.getAllByTestId( 'heatmap-cell' ) ).toHaveLength( 6 );
+	} );
+
+	test( 'shows an empty-state message for empty data', () => {
+		renderChart( { data: [] } );
+		expect( screen.getByText( /no data available/i ) ).toBeInTheDocument();
+	} );
+
+	test( 'renders column and row labels', () => {
+		renderChart( { rowLabels: [ 'Mon', '', 'Wed' ] } );
+		expect( screen.getAllByText( 'W1' ).length ).toBeGreaterThan( 0 );
+		expect( screen.getAllByText( 'Mon' ).length ).toBeGreaterThan( 0 );
+		expect( screen.getAllByText( 'Wed' ).length ).toBeGreaterThan( 0 );
+	} );
+
+	test( 'shows in-cell values by default and hides them in compact mode', () => {
+		const { rerender } = renderChart();
+		// value 3 appears in a cell
+		expect( screen.getAllByText( '3' ).length ).toBeGreaterThan( 0 );
+
+		rerender(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } compact />
+			</GlobalChartsProvider>
+		);
+		expect( screen.queryByText( '3' ) ).not.toBeInTheDocument();
+	} );
+
+	test( 'formats large in-cell values compactly', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart
+					width={ 500 }
+					height={ 300 }
+					data={ [ { label: 'W1', data: [ { value: 748500 } ] } ] }
+				/>
+			</GlobalChartsProvider>
+		);
+		expect( screen.getByText( /748\.5\s?K/i ) ).toBeInTheDocument();
+	} );
+
+	test( 'gives each cell an accessible name for screen readers', () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		// The gridcell's accessible name is its aria-label (column + row + value).
+		expect( screen.getByRole( 'gridcell', { name: 'W1 Mon: 1' } ) ).toBeInTheDocument();
+	} );
+
+	test( 'shows a tooltip on cell hover when withTooltips is set', async () => {
+		renderChart( { withTooltips: true, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const cell = screen.getAllByTestId( 'heatmap-cell' )[ 0 ];
+		await userEvent.setup().hover( cell );
+		await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+	} );
+
+	test.each( [ undefined, 'light', 'dark' ] as const )(
+		'draws the tooltip on the package surface for tooltipVariant %s',
+		async tooltipVariant => {
+			renderChart( { withTooltips: true, tooltipVariant, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+			await userEvent.setup().hover( screen.getAllByTestId( 'heatmap-cell' )[ 0 ] );
+			await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+			const box = screen.getByTestId( 'bounded-tooltip' );
+			expect( box ).toHaveClass( 'surface' );
+			expect( box ).not.toHaveAttribute( 'style', expect.stringContaining( 'background' ) );
+			expect( box ).toHaveStyle( { zIndex: 3 } );
+		}
+	);
+
+	test( 'merges tooltipStyle over the box styles', async () => {
+		renderChart( {
+			withTooltips: true,
+			tooltipStyle: { padding: '2px 4px' },
+			rowLabels: [ 'Mon', 'Tue', 'Wed' ],
+		} );
+		await userEvent.setup().hover( screen.getAllByTestId( 'heatmap-cell' )[ 0 ] );
+		await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+		expect( screen.getByTestId( 'bounded-tooltip' ) ).toHaveStyle( {
+			padding: '2px 4px',
+			zIndex: 3,
+		} );
+	} );
+
+	test( 'shows a tooltip on keyboard navigation when withTooltips is set', async () => {
+		renderChart( { withTooltips: true, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		grid.focus();
+		await userEvent.setup().keyboard( '{ArrowDown}' );
+		await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+	} );
+
+	test( 'hides the keyboard tooltip on Escape', async () => {
+		renderChart( { withTooltips: true, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowDown}' );
+		await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+		await user.keyboard( '{Escape}' );
+		expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+	} );
+
+	test( 'renders a composition legend with Less/More labels', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data }>
+					<HeatmapChart.Legend />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		expect( screen.getByText( /less/i ) ).toBeInTheDocument();
+		expect( screen.getByText( /more/i ) ).toBeInTheDocument();
+	} );
+
+	test( 'draws the legend as separate swatches by default and as one bar on request', () => {
+		const { rerender } = render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data }>
+					<HeatmapChart.Legend />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		const scale = screen.getByTestId( 'heatmap-legend-scale' );
+		expect( scale ).not.toHaveClass( 'heatmap-chart__legend-scale--bar' );
+		expect( within( scale ).getAllByTestId( 'heatmap-legend-swatch' ) ).toHaveLength( 5 );
+
+		rerender(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data }>
+					<HeatmapChart.Legend variant="bar" steps={ 4 } />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		expect( screen.getByTestId( 'heatmap-legend-scale' ) ).toHaveClass(
+			'heatmap-chart__legend-scale--bar'
+		);
+		expect(
+			within( screen.getByTestId( 'heatmap-legend-scale' ) ).getAllByTestId(
+				'heatmap-legend-swatch'
+			)
+		).toHaveLength( 4 );
+	} );
+
+	test.each( [
+		[ 'with zeros painted empty', data, 1 ],
+		[ 'with negative values', [ { label: 'W1', data: [ { value: -2 }, { value: 0 } ] } ], 0 ],
+	] )( 'starts the legend scale with an empty-cell swatch %s', ( _case, rows, count ) => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ rows }>
+					<HeatmapChart.Legend variant="bar" />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		const empty = screen.queryAllByTestId( 'heatmap-legend-empty-swatch' );
+		const scale = screen.getByTestId( 'heatmap-legend-scale' );
+
+		expect( empty ).toHaveLength( count );
+		expect( within( scale ).getAllByTestId( 'heatmap-legend-swatch' ) ).toHaveLength( 5 );
+		expect(
+			within( scale )
+				.getAllByTestId( /^heatmap-legend-(empty-)?swatch$/ )
+				.slice( 0, count )
+		).toEqual( empty );
+	} );
+
+	test( 'paints the legend on the same scale as the cells', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } primaryColor="#3858e9">
+					<HeatmapChart.Legend />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+
+		for ( const swatch of screen.getAllByTestId( 'heatmap-legend-swatch' ) ) {
+			for ( const end of [ 'primary', 'low', 'high' ] ) {
+				const property = `--a8c-charts-color-heatmap-${ end }`;
+				expect( swatch.style.getPropertyValue( property ) ).toBe(
+					grid.style.getPropertyValue( property )
+				);
+			}
+		}
+	} );
+
+	test( 'ArrowDown moves focus within a column, ArrowRight moves to next column', async () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		// First ArrowDown lands on cell (0,0)
+		grid.focus();
+		await user.keyboard( '{ArrowDown}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-0$/ )
+		);
+
+		// Second ArrowDown moves row 0→1 in col 0
+		await user.keyboard( '{ArrowDown}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-1$/ )
+		);
+
+		// ArrowRight moves to next column, same row (col 0→1, row 1)
+		await user.keyboard( '{ArrowRight}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-1-1$/ )
+		);
+	} );
+
+	test( 'ArrowUp and ArrowLeft move focus in the opposite direction', async () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		// Navigate to col 1, row 2 (bottom-right of a 2-col × 3-row grid)
+		// First ArrowDown lands on (0,0); subsequent presses move from there.
+		grid.focus();
+		await user.keyboard( '{ArrowDown}{ArrowDown}{ArrowDown}{ArrowRight}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-1-2$/ )
+		);
+
+		// ArrowUp moves row 2→1 within col 1
+		await user.keyboard( '{ArrowUp}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-1-1$/ )
+		);
+
+		// ArrowLeft moves col 1→0, same row
+		await user.keyboard( '{ArrowLeft}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-1$/ )
+		);
+	} );
+
+	test( 'ArrowLeft at column 0 and ArrowUp at row 0 clamp (no wrap)', async () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		// Start at col 0, row 0 (first ArrowDown sets index to row 1; press ArrowUp back to row 0)
+		grid.focus();
+		await user.keyboard( '{ArrowDown}{ArrowUp}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-0$/ )
+		);
+
+		// ArrowUp at row 0 stays at row 0
+		await user.keyboard( '{ArrowUp}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-0$/ )
+		);
+
+		// ArrowLeft at col 0 stays at col 0
+		await user.keyboard( '{ArrowLeft}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-0$/ )
+		);
+	} );
+
+	test( 'Escape clears the selection (aria-activedescendant removed)', async () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		grid.focus();
+		await user.keyboard( '{ArrowDown}' );
+		expect( grid ).toHaveAttribute( 'aria-activedescendant' );
+
+		await user.keyboard( '{Escape}' );
+		expect( grid ).not.toHaveAttribute( 'aria-activedescendant' );
+	} );
+
+	// Calendar ragged edges: hidden cells keep their grid slot but paint
+	// nothing and take no interaction.
+	const raggedData: HeatmapColumn[] = [
+		{ label: 'W1', data: [ { value: null, hidden: true }, { value: 1 }, { value: 2 } ] },
+		{ label: 'W2', data: [ { value: 3 }, { value: null, hidden: true }, { value: 4 } ] },
+		{ label: 'W3', data: [ { value: 5 }, { value: 6 }, { value: null, hidden: true } ] },
+	];
+
+	test( 'hidden cells render as empty slots outside the accessibility tree', () => {
+		renderChart( { data: raggedData } );
+		expect( screen.getAllByTestId( 'heatmap-cell' ) ).toHaveLength( 6 );
+		expect( screen.getAllByTestId( 'heatmap-cell-hidden' ) ).toHaveLength( 3 );
+		expect( screen.getAllByRole( 'gridcell' ) ).toHaveLength( 6 );
+	} );
+
+	test( 'keyboard navigation skips hidden cells and never lands on them', async () => {
+		renderChart( { data: raggedData, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		// The initial selection starts past the hidden leading slot (0,0).
+		grid.focus();
+		await user.keyboard( '{ArrowDown}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-1$/ )
+		);
+
+		// ArrowRight steps over the hidden (1,1) to (2,1).
+		await user.keyboard( '{ArrowRight}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-2-1$/ )
+		);
+
+		// Only a hidden slot (2,2) lies below — the selection stays put.
+		await user.keyboard( '{ArrowDown}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-2-1$/ )
+		);
+
+		// ArrowLeft steps back over the hidden (1,1) to (0,1); ArrowUp has
+		// only the hidden (0,0) above, so the selection stays again.
+		await user.keyboard( '{ArrowLeft}{ArrowUp}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-0-1$/ )
+		);
+	} );
+
+	test( 'rows contain gridcell children in the ARIA hierarchy', () => {
+		renderChart();
+		const rows = screen.getAllByRole( 'row' );
+		expect( rows.length ).toBeGreaterThan( 0 );
+		rows.forEach( row => {
+			expect( within( row ).getAllByRole( 'gridcell' ).length ).toBeGreaterThan( 0 );
+		} );
+	} );
+
+	test( 'keeps a strict grid → row structure (column labels live in a row, not directly under the grid)', () => {
+		renderChart();
+		// The header row is aria-hidden, so include hidden elements when querying for it.
+		const rows = screen.getAllByRole( 'row', { hidden: true } );
+		const headerRow = rows.find( row => within( row ).queryByText( 'W1' ) );
+		expect( headerRow ).toBeDefined();
+	} );
+
+	test( 'leaves the cell gap to WPDS tokens in non-compact mode (no inline override)', () => {
+		renderChart();
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		// Non-compact sets no inline gap — the SCSS falls back to the WPDS token.
+		expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-gap' ) ).toBe( '' );
+	} );
+
+	test( 'applies the compact gap inline from the theme compactCellGap', () => {
+		render(
+			<GlobalChartsProvider theme={ { heatmapChart: { compactCellGap: 3 } } }>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } compact />
+			</GlobalChartsProvider>
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-gap' ) ).toBe(
+			'3px'
+		);
+	} );
+
+	test( 'sizes compact cells to the theme compactCellSize', () => {
+		render(
+			<GlobalChartsProvider theme={ { heatmapChart: { compactCellSize: 20 } } }>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } compact />
+			</GlobalChartsProvider>
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-size' ) ).toBe(
+			'20px'
+		);
+		// Compact track template is built from the fixed cell size.
+		expect( grid.style.gridTemplateColumns ).toContain(
+			'var(--a8c-charts-dimension-heatmap-cell-size)'
+		);
+	} );
+
+	test( 'caps cell width without changing the normal vertical layout', () => {
+		renderChart( { maxCellWidth: 64 } );
+		const chart = screen.getByTestId( 'heatmap-chart' );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+
+		expect( grid.style.gridTemplateColumns ).toContain( 'minmax(0px, 64px)' );
+		expect( grid.style.gridTemplateRows ).toContain( 'minmax(0px, 1fr)' );
+		expect( chart ).not.toHaveClass( 'heatmap-chart--height-capped' );
+		expect( grid ).not.toHaveClass( 'heatmap-chart__grid--height-capped' );
+	} );
+
+	test( 'content-sizes the vertical layout when cell height is capped', () => {
+		renderChart( { maxCellHeight: 42 } );
+		const chart = screen.getByTestId( 'heatmap-chart' );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+
+		expect( grid.style.gridTemplateColumns ).toContain( 'minmax(0px, 1fr)' );
+		expect( grid.style.gridTemplateRows ).toContain( 'minmax(0px, 42px)' );
+		expect( chart ).toHaveClass( 'heatmap-chart--height-capped' );
+		expect( grid ).toHaveClass( 'heatmap-chart__grid--height-capped' );
+	} );
+
+	test( 'applies independent minimum cell width and height floors', () => {
+		renderChart( { minCellWidth: 44, minCellHeight: 32 } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+
+		expect( grid.style.gridTemplateColumns ).toContain( 'minmax(44px, 1fr)' );
+		expect( grid.style.gridTemplateRows ).toContain( 'minmax(32px, 1fr)' );
+	} );
+
+	test( 'applies the primaryColor prop as the cell-scale color', () => {
+		renderChart( { primaryColor: '#abcdef' } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-color-heatmap-primary' ) ).toBe( '#abcdef' );
+	} );
+
+	test( 'leaves the fill to the stylesheet when the primary color cannot resolve to hex', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } primaryColor="oklch(0.6 0.2 260)">
+					<HeatmapChart.Legend />
+				</HeatmapChart>
+			</GlobalChartsProvider>
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const swatches = screen.getAllByTestId( 'heatmap-legend-swatch' );
+
+		for ( const element of [ grid, ...swatches ] ) {
+			expect( element.style.getPropertyValue( '--a8c-charts-color-heatmap-primary' ) ).toBe(
+				'oklch(0.6 0.2 260)'
+			);
+			expect( element.style.getPropertyValue( '--a8c-charts-color-heatmap-low' ) ).toBe( '' );
+			expect( element.style.getPropertyValue( '--a8c-charts-color-heatmap-high' ) ).toBe( '' );
+		}
+		expect( screen.getByText( '4' ) ).toHaveClass( 'heatmap-chart__cell-value', { exact: true } );
+	} );
+
+	test( 'builds the scale for white on a see-through background, as the palette does', () => {
+		const scope = document.createElement( 'div' );
+		scope.style.setProperty( '--a8c-charts-color-background', 'transparent' );
+		document.body.appendChild( scope );
+
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } primaryColor="#3858e9" />
+			</GlobalChartsProvider>,
+			{ container: scope }
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+
+		expect( grid.style.getPropertyValue( '--a8c-charts-color-heatmap-low' ) ).toBe( '#7f93f1' );
+		expect( grid.style.getPropertyValue( '--a8c-charts-color-heatmap-high' ) ).toBe( '#3554df' );
+
+		document.body.removeChild( scope );
+	} );
+
+	test( 'reads the computed style once per re-render for the fill scale', () => {
+		const { rerender } = renderChart();
+		const spy = jest.spyOn( window, 'getComputedStyle' );
+
+		rerender(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } />
+			</GlobalChartsProvider>
+		);
+
+		expect( spy ).toHaveBeenCalledTimes( 1 );
+		spy.mockRestore();
+	} );
+
+	test( 'paints a zero as an empty cell, still announcing its value', () => {
+		renderChart();
+		const zero = screen.getByRole( 'gridcell', { name: 'W2: 0' } );
+
+		expect( zero ).not.toHaveClass( 'heatmap-chart__cell--filled' );
+		expect( zero.style.getPropertyValue( '--a8c-charts-heatmap-cell-intensity' ) ).toBe( '' );
+		expect( screen.getByRole( 'gridcell', { name: 'W1: 1' } ) ).toHaveClass(
+			'heatmap-chart__cell--filled'
+		);
+	} );
+
+	test( 'puts the lowest non-zero value on the lowest step', () => {
+		renderChart();
+		const lowest = screen.getByRole( 'gridcell', { name: 'W1: 1' } );
+
+		expect( lowest.style.getPropertyValue( '--a8c-charts-heatmap-cell-intensity' ) ).toBe( '0' );
+	} );
+
+	test( 'falls back to the first palette slot when no primaryColor prop is set', () => {
+		const scope = document.createElement( 'div' );
+		scope.style.setProperty( '--a8c-charts-color-series-1', '#0a0b0c' );
+		document.body.appendChild( scope );
+
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } />
+			</GlobalChartsProvider>,
+			{ container: scope }
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-color-heatmap-primary' ) ).toBe( '#0a0b0c' );
+
+		document.body.removeChild( scope );
+	} );
+
+	test( 'the unresponsive export pins explicit width and height', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChartUnresponsive width={ 480 } height={ 240 } data={ data } />
+			</GlobalChartsProvider>
+		);
+		const chart = screen.getByTestId( 'heatmap-chart' );
+		expect( chart ).toHaveStyle( { width: '480px', height: '240px' } );
+	} );
+
+	test( 'the responsive export leaves the chart unpinned so it fills its container', () => {
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ data } />
+			</GlobalChartsProvider>
+		);
+		const chart = screen.getByTestId( 'heatmap-chart' );
+		expect( chart ).not.toHaveStyle( { width: '500px' } );
+		expect( chart ).not.toHaveStyle( { height: '300px' } );
+	} );
+} );
+
+// Chart container at (100, 50); the tooltip box measures 120x40. Everything
+// else the charts measure (wrapper, clipping lookups) reports the container.
+const mockRects = () =>
+	jest.spyOn( Element.prototype, 'getBoundingClientRect' ).mockImplementation( function (
+		this: Element
+	) {
+		const box = this.classList.contains( 'visx-tooltip' );
+		return {
+			left: box ? 0 : 100,
+			top: box ? 0 : 50,
+			width: box ? 120 : 400,
+			height: box ? 40 : 300,
+			right: box ? 120 : 500,
+			bottom: box ? 40 : 350,
+			x: box ? 0 : 100,
+			y: box ? 0 : 50,
+			toJSON: () => ( {} ),
+		} as DOMRect;
+	} );
+
+describe( 'HeatmapChart value text contrast', () => {
+	// The low end, a mid-tone, and the high end of the scale.
+	const scale: HeatmapColumn[] = [
+		{ label: 'W1', data: [ { value: 1 }, { value: 60 }, { value: 100 } ] },
+	];
+
+	let injectedStyle: HTMLStyleElement | null = null;
+
+	afterEach( () => {
+		injectedStyle?.remove();
+		injectedStyle = null;
+	} );
+
+	const renderScale = ( className?: string ) =>
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart
+					width={ 500 }
+					height={ 300 }
+					data={ scale }
+					primaryColor="#3858e9"
+					className={ className }
+				/>
+			</GlobalChartsProvider>
+		);
+
+	test( 'picks the label role that reaches AA on light and dark cells', () => {
+		renderScale();
+
+		expect( screen.getByText( '1' ) ).toHaveClass( 'heatmap-chart__cell-value', { exact: true } );
+		expect( screen.getByText( '100' ) ).toHaveClass( 'heatmap-chart__cell-value--inverse' );
+	} );
+
+	test( 'falls back to black on a mid-tone cell where neither role reaches AA', () => {
+		renderScale();
+
+		expect( screen.getByText( '60' ) ).toHaveClass( 'heatmap-chart__cell-value--black' );
+	} );
+
+	test( 'reads the label roles once data arrives after an empty first render', () => {
+		const { rerender } = render(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ [] } primaryColor="#3858e9" />
+			</GlobalChartsProvider>
+		);
+
+		rerender(
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } data={ scale } primaryColor="#3858e9" />
+			</GlobalChartsProvider>
+		);
+
+		expect( screen.getByText( '100' ) ).toHaveClass( 'heatmap-chart__cell-value--inverse' );
+	} );
+
+	test( 'falls back to black or white when a label role uses syntax it cannot read', () => {
+		injectedStyle = document.createElement( 'style' );
+		injectedStyle.textContent =
+			'.modern-heatmap { --a8c-charts-color-label-inverse: rgb(255 255 255); }';
+		document.head.appendChild( injectedStyle );
+
+		renderScale( 'modern-heatmap' );
+
+		expect( screen.getByText( '100' ) ).toHaveClass( 'heatmap-chart__cell-value--white' );
+	} );
+
+	test( 'measures a translucent label role as it paints over each cell', () => {
+		injectedStyle = document.createElement( 'style' );
+		injectedStyle.textContent =
+			'.translucent-heatmap { --a8c-charts-color-label: rgba(30, 30, 30, 0.3); }';
+		document.head.appendChild( injectedStyle );
+
+		renderScale( 'translucent-heatmap' );
+
+		expect( screen.getByText( '1' ) ).toHaveClass( 'heatmap-chart__cell-value--black' );
+		expect( screen.getByText( '100' ) ).toHaveClass( 'heatmap-chart__cell-value--inverse' );
+	} );
+
+	test( 'leaves a summary value, which sits on no fill, on the default role', () => {
+		injectedStyle = document.createElement( 'style' );
+		injectedStyle.textContent =
+			'.swapped-heatmap { --a8c-charts-color-label: #f0f0f0; --a8c-charts-color-label-inverse: #1e1e1e; }';
+		document.head.appendChild( injectedStyle );
+
+		render(
+			<GlobalChartsProvider>
+				<HeatmapChart
+					width={ 500 }
+					height={ 300 }
+					className="swapped-heatmap"
+					primaryColor="#3858e9"
+					data={ [ ...scale, { label: 'Total', summary: true, data: [ { value: 7 } ] } ] }
+				/>
+			</GlobalChartsProvider>
+		);
+
+		expect( screen.getByText( '7' ) ).toHaveClass( 'heatmap-chart__cell-value', { exact: true } );
+		expect( screen.getByText( '1' ) ).toHaveClass( 'heatmap-chart__cell-value--inverse' );
+	} );
+
+	test( "keeps one color when both label roles are set to it on the chart's own class", () => {
+		injectedStyle = document.createElement( 'style' );
+		injectedStyle.textContent =
+			'.pinned-heatmap { --a8c-charts-color-label: #767676; --a8c-charts-color-label-inverse: #767676; }';
+		document.head.appendChild( injectedStyle );
+
+		renderScale( 'pinned-heatmap' );
+
+		[ '1', '60', '100' ].forEach( value =>
+			expect( screen.getByText( value ) ).toHaveClass( 'heatmap-chart__cell-value', {
+				exact: true,
+			} )
+		);
+	} );
+} );
+
+describe( 'HeatmapChart keyboard tooltip', () => {
+	test( 'opens on the selected cell without row labels', async () => {
+		renderChart( { withTooltips: true } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		grid.focus();
+		await user.keyboard( '{ArrowDown}' );
+
+		expect( within( screen.getByRole( 'tooltip' ) ).getByText( '1' ) ).toBeInTheDocument();
+	} );
+} );
+
+describe( 'HeatmapChart tooltip position', () => {
+	// Restore only this spy: `restoreAllMocks` would also unspy the console guard, and
+	// every later `toHaveWarned` in the file would find no spy.
+	let rects: jest.SpyInstance;
+	afterEach( () => {
+		rects.mockRestore();
+	} );
+
+	test( 'places the box relative to the chart root, at the pointer plus the offsets', async () => {
+		rects = mockRects();
+		renderChart( { withTooltips: true, rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+
+		await userEvent.setup().pointer( {
+			target: screen.getAllByTestId( 'heatmap-cell' )[ 0 ],
+			coords: { clientX: 180, clientY: 140 },
+		} );
+
+		// (180, 140) is (80, 90) inside the root; the box adds 10px each way.
+		await expect( screen.findByRole( 'tooltip' ) ).resolves.toBeInTheDocument();
+		expect( screen.getByTestId( 'bounded-tooltip' ) ).toHaveStyle( {
+			transform: 'translate(90px, 100px)',
+		} );
+	} );
+} );
+
+describe( 'HeatmapChart summary column', () => {
+	const withTotals: HeatmapColumn[] = [
+		...data,
+		{ label: 'Total', summary: true, data: [ { value: 400 }, { value: 200 }, { value: null } ] },
+	];
+
+	test( 'keeps the summary column out of the color scale', () => {
+		renderChart( { data: withTotals } );
+		// 4 is still the data maximum, so it keeps full intensity.
+		expect(
+			screen
+				.getByRole( 'gridcell', { name: 'W2: 4' } )
+				.style.getPropertyValue( '--a8c-charts-heatmap-cell-intensity' )
+		).toBe( '1' );
+		expect(
+			screen
+				.getByRole( 'gridcell', { name: 'Total: 400' } )
+				.style.getPropertyValue( '--a8c-charts-heatmap-cell-intensity' )
+		).toBe( '' );
+	} );
+
+	test( 'draws every summary cell, printing its figure even in compact mode', () => {
+		renderChart( { data: withTotals, compact: true } );
+		expect( screen.getAllByTestId( 'heatmap-cell-summary' ) ).toHaveLength( 3 );
+		expect( screen.getByRole( 'gridcell', { name: 'Total: 400' } ) ).toHaveTextContent( '400' );
+		expect( screen.getByRole( 'gridcell', { name: 'Total: No data' } ) ).toBeEmptyDOMElement();
+		expect( screen.getByRole( 'grid' ) ).toHaveAttribute( 'aria-colcount', '3' );
+	} );
+
+	test( 'sets a summary apart from the data on either side, but not from another summary', () => {
+		renderChart( {
+			data: [
+				{ label: 'Lead', summary: true, data: [ { value: 7 }, { value: 8 }, { value: 9 } ] },
+				...withTotals,
+				{ label: 'Mean', summary: true, data: [ { value: 2 }, { value: 1 }, { value: 3 } ] },
+			],
+		} );
+
+		const lead = screen.getByRole( 'gridcell', { name: 'Lead: 7' } );
+		expect( lead ).toHaveClass( 'heatmap-chart__gap-end' );
+		expect( lead ).not.toHaveClass( 'heatmap-chart__gap-start' );
+
+		const total = screen.getByRole( 'gridcell', { name: 'Total: 400' } );
+		expect( total ).toHaveClass( 'heatmap-chart__gap-start' );
+		expect( total ).not.toHaveClass( 'heatmap-chart__gap-end' );
+
+		const mean = screen.getByRole( 'gridcell', { name: 'Mean: 2' } );
+		expect( mean ).not.toHaveClass( 'heatmap-chart__gap-start' );
+		expect( mean ).not.toHaveClass( 'heatmap-chart__gap-end' );
+		expect( screen.getByRole( 'gridcell', { name: 'W1: 1' } ) ).not.toHaveClass(
+			'heatmap-chart__gap-start'
+		);
+	} );
+
+	test( 'keeps the summary track content-sized when the data tracks are capped', () => {
+		renderChart( { data: withTotals, maxCellWidth: 32 } );
+
+		expect( screen.getByRole( 'grid', { name: /heatmap/i } ) ).toHaveStyle( {
+			gridTemplateColumns: 'auto minmax(0px, 32px) minmax(0px, 32px) minmax(auto, max-content)',
+		} );
+	} );
+
+	test( 'reaches the summary column by keyboard, with its tooltip', async () => {
+		renderChart( { data: withTotals, withTooltips: true } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+
+		grid.focus();
+		await user.keyboard( '{ArrowDown}{ArrowRight}{ArrowRight}' );
+
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-2-0$/ )
+		);
+		expect( within( screen.getByRole( 'tooltip' ) ).getByText( '400' ) ).toBeInTheDocument();
+	} );
+} );
+
+describe( 'HeatmapChart grid placement', () => {
+	test( 'omits the column-label row when no column has a label', () => {
+		renderChart( { data: data.map( column => ( { ...column, label: undefined } ) ) } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.gridTemplateRows.startsWith( 'auto' ) ).toBe( false );
+		// Three data rows, no header row.
+		expect( within( grid ).getAllByRole( 'row', { hidden: true } ) ).toHaveLength( 3 );
+	} );
+
+	test( 'keeps the column-label row when a column has a label', () => {
+		renderChart();
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.gridTemplateRows.startsWith( 'auto ' ) ).toBe( true );
+		expect( within( grid ).getAllByRole( 'row', { hidden: true } ) ).toHaveLength( 4 );
+	} );
+
+	test( 'places every cell and label on an explicit track', () => {
+		renderChart( { rowLabels: [ 'Mon', 'Tue', 'Wed' ] } );
+		const cell = screen
+			.getAllByTestId( 'heatmap-cell' )
+			.find( element => element.dataset.column === '1' && element.dataset.row === '2' );
+		// Column 1 sits on track line 3 (after the row-label track); row 2 sits on
+		// grid row 4 (after the label row).
+		expect( cell?.style.gridColumn ).toBe( '3' );
+		expect( cell?.style.gridRow ).toBe( '4' );
+		expect( screen.getByText( 'Wed' ) ).toHaveStyle( { gridColumn: '1' } );
+		expect( screen.getByText( 'Wed' ) ).toHaveStyle( { gridRow: '4' } );
+		expect( screen.getByText( 'W2' ) ).toHaveStyle( { gridColumn: '3' } );
+		expect( screen.getByText( 'W2' ) ).toHaveStyle( { gridRow: '1' } );
+	} );
+} );
+
+describe( 'HeatmapChart column groups', () => {
+	const grouped = [
+		{ data: [ { value: 1 }, { value: 2 } ] },
+		{ data: [ { value: 3 }, { value: 4 } ] },
+		{ data: [ { value: 5 }, { value: 6 } ] },
+		{ data: [ { value: 7 }, { value: 8 } ] },
+	];
+	const columnGroups = [
+		{ label: 'Jan', span: 2 },
+		{ label: 'Feb', span: 2 },
+	];
+
+	test( 'draws one label per group beneath the grid, outside the accessibility tree', () => {
+		renderChart( { data: grouped, columnGroups } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const labels = within( grid ).getAllByTestId( 'heatmap-group-label' );
+		expect( labels.map( label => label.textContent ) ).toEqual( [ 'Jan', 'Feb' ] );
+		const rows = within( grid ).getAllByRole( 'row', { hidden: true } );
+		const labelRow = rows[ rows.length - 1 ];
+		expect( labelRow ).toHaveAttribute( 'aria-hidden', 'true' );
+		expect( within( labelRow ).getAllByTestId( 'heatmap-group-label' ) ).toHaveLength( 2 );
+		// Two data rows plus the label row; no header row (no column labels).
+		expect( grid ).toHaveStyle( { gridTemplateRows: 'repeat(2, minmax(0px, 1fr)) auto' } );
+	} );
+
+	test( 'spans each label over its group and skips the gap track between groups', () => {
+		renderChart( { data: grouped, columnGroups } );
+		const [ jan, feb ] = screen.getAllByTestId( 'heatmap-group-label' );
+		expect( jan ).toHaveStyle( { gridColumn: '2 / span 2' } );
+		// Line 4 is the gap track, so Feb starts on 5.
+		expect( feb ).toHaveStyle( { gridColumn: '5 / span 2' } );
+		expect( feb ).toHaveStyle( { gridRow: '3' } );
+		const cell = screen
+			.getAllByTestId( 'heatmap-cell' )
+			.find( element => element.dataset.column === '2' && element.dataset.row === '0' );
+		expect( cell?.style.gridColumn ).toBe( '5' );
+	} );
+
+	test( 'inserts a gap track from the theme groupGap between groups', () => {
+		render(
+			<GlobalChartsProvider theme={ { heatmapChart: { groupGap: 30 } } }>
+				<HeatmapChart width={ 500 } height={ 300 } data={ grouped } columnGroups={ columnGroups } />
+			</GlobalChartsProvider>
+		);
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid ).toHaveStyle( {
+			gridTemplateColumns:
+				'auto minmax(0px, 1fr) minmax(0px, 1fr) 30px minmax(0px, 1fr) minmax(0px, 1fr)',
+		} );
+	} );
+
+	test( 'lets the gaps share the leftover width in compact mode, down to groupGap', () => {
+		renderChart( { data: grouped, columnGroups, compact: true } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.gridTemplateColumns ).toContain( 'minmax(24px, 1fr)' );
+		expect( grid.className ).toMatch( /flex-gaps/ );
+	} );
+
+	test( 'still counts only data columns for assistive technology', () => {
+		renderChart( { data: grouped, columnGroups } );
+		expect( screen.getByRole( 'grid', { name: /heatmap/i } ) ).toHaveAttribute(
+			'aria-colcount',
+			'4'
+		);
+	} );
+
+	test( 'draws no group row and warns once on an unusable span', () => {
+		renderChart( { data: grouped, columnGroups: [ { label: 'Jan', span: 5 } ] } );
+		expect( screen.queryByTestId( 'heatmap-group-label' ) ).not.toBeInTheDocument();
+		expect( screen.getByRole( 'grid', { name: /heatmap/i } ) ).toHaveStyle( {
+			gridTemplateRows: 'repeat(2, minmax(0px, 1fr))',
+		} );
+		expect( console ).toHaveWarned();
+	} );
+
+	test( 'keyboard navigation crosses a group boundary', async () => {
+		renderChart( { data: grouped, columnGroups } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowRight}{ArrowRight}{ArrowRight}' );
+		expect( grid ).toHaveAttribute(
+			'aria-activedescendant',
+			expect.stringMatching( /-cell-2-0$/ )
+		);
+	} );
+
+	test( 'names a cell by its group, column and row when it has no label of its own', () => {
+		renderChart( {
+			data: grouped.map( ( column, index ) => ( { ...column, label: `W${ index + 1 }` } ) ),
+			columnGroups,
+			rowLabels: [ 'Mon', 'Tue' ],
+		} );
+		expect( screen.getByRole( 'gridcell', { name: 'Jan W1 Mon: 1' } ) ).toBeInTheDocument();
+		expect( screen.getByRole( 'gridcell', { name: 'Feb W3 Tue: 6' } ) ).toBeInTheDocument();
+	} );
+
+	test( 'leaves an ungrouped tail and a labelled cell out of the group name', () => {
+		renderChart( {
+			data: [ ...grouped, { data: [ { value: 9, label: 'Total Mon' }, { value: 10 } ] } ],
+			columnGroups,
+			rowLabels: [ 'Mon', 'Tue' ],
+		} );
+		expect( screen.getByRole( 'gridcell', { name: 'Total Mon: 9' } ) ).toBeInTheDocument();
+		expect( screen.getByRole( 'gridcell', { name: 'Tue: 10' } ) ).toBeInTheDocument();
+	} );
+
+	test( 'keeps column labels on the first row and group labels on the last with both set', () => {
+		renderChart( {
+			data: grouped.map( ( column, index ) => ( { ...column, label: `W${ index + 1 }` } ) ),
+			columnGroups,
+		} );
+		expect( screen.getByText( 'W3' ) ).toHaveStyle( { gridColumn: '5', gridRow: '1' } );
+		expect( screen.getAllByTestId( 'heatmap-cell' )[ 0 ] ).toHaveStyle( { gridRow: '2' } );
+		const [ jan ] = screen.getAllByTestId( 'heatmap-group-label' );
+		expect( jan ).toHaveStyle( { gridRow: '4' } );
+	} );
+} );
+
+describe( 'HeatmapChart fitCells', () => {
+	const threeMonths = Array.from( { length: 6 }, ( _, index ) => ( {
+		data: [ { value: index }, { value: index + 1 } ],
+	} ) );
+	const columnGroups = [
+		{ label: 'Jan', span: 2 },
+		{ label: 'Feb', span: 2 },
+		{ label: 'Mar', span: 2 },
+	];
+
+	let widthSpy: jest.SpyInstance;
+	let heightSpy: jest.SpyInstance;
+
+	beforeEach( () => {
+		widthSpy = jest.spyOn( Element.prototype, 'clientWidth', 'get' ).mockReturnValue( 400 );
+		heightSpy = jest.spyOn( Element.prototype, 'clientHeight', 'get' ).mockReturnValue( 400 );
+	} );
+
+	afterEach( () => {
+		widthSpy.mockRestore();
+		heightSpy.mockRestore();
+	} );
+
+	test( 'wraps the groups that fit better on a second band below the first, cells grown to match', () => {
+		renderChart( { data: threeMonths, columnGroups, compact: true, fitCells: true } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-size' ) ).toBe(
+			'91px'
+		);
+		const [ , feb, mar ] = screen.getAllByTestId( 'heatmap-group-label' );
+		expect( feb ).toHaveStyle( { gridColumn: '5 / span 2', gridRow: '3' } );
+		// Band one takes rows 1-2, its labels 3 and the gap 4, so band two's labels sit on 7.
+		expect( mar ).toHaveStyle( { gridColumn: '2 / span 2', gridRow: '7' } );
+		const marchCell = screen
+			.getAllByTestId( 'heatmap-cell' )
+			.find( element => element.dataset.column === '4' && element.dataset.row === '0' );
+		expect( marchCell ).toHaveStyle( { gridColumn: '2', gridRow: '5' } );
+	} );
+
+	test( 'keeps the theme size, with a warning, when a column is a summary', () => {
+		renderChart( {
+			data: [
+				...threeMonths,
+				{ label: 'Total', summary: true, data: [ { value: 1 }, { value: 2 } ] },
+			],
+			columnGroups,
+			compact: true,
+			fitCells: true,
+		} );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-size' ) ).toBe(
+			'11px'
+		);
+		expect( console ).toHaveWarned();
+	} );
+
+	test( 'leaves the grid the box less the content beside it', () => {
+		const offsetHeight = jest
+			.spyOn( HTMLElement.prototype, 'offsetHeight', 'get' )
+			.mockImplementation( function ( this: HTMLElement ) {
+				return this.dataset.testid === 'beside-grid' ? 100 : 0;
+			} );
+		try {
+			renderChart( {
+				data: threeMonths,
+				columnGroups,
+				compact: true,
+				fitCells: true,
+				children: <div data-testid="beside-grid" />,
+			} );
+			const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+			expect( grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-size' ) ).toBe(
+				'66px'
+			);
+		} finally {
+			offsetHeight.mockRestore();
+		}
+	} );
+
+	test( 'refits within the resize delivery, before later observers read the grid', () => {
+		const observers: ResizeObserverCallback[] = [];
+		const original = window.ResizeObserver;
+		window.ResizeObserver = class {
+			constructor( private callback: ResizeObserverCallback ) {}
+			observe() {
+				observers.push( this.callback );
+			}
+			unobserve() {}
+			disconnect() {}
+		} as unknown as typeof ResizeObserver;
+		try {
+			renderChart( { data: threeMonths, columnGroups, compact: true, fitCells: true } );
+			const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+			heightSpy.mockReturnValue( 100 );
+			let cellSize = '';
+			act( () => {
+				observers.forEach( callback => callback( [], {} as ResizeObserver ) );
+				cellSize = grid.style.getPropertyValue( '--a8c-charts-dimension-heatmap-cell-size' );
+			} );
+			expect( cellSize ).toBe( '48px' );
+			const [ , , mar ] = screen.getAllByTestId( 'heatmap-group-label' );
+			expect( mar ).toHaveStyle( { gridRow: '3' } );
+		} finally {
+			window.ResizeObserver = original;
+		}
+	} );
+} );
+
+describe( 'HeatmapChart calendar navigation', () => {
+	const calendar = ( range: { start: string; end: string }, days: string[] ) =>
+		buildMonthCalendarHeatmapData(
+			Object.fromEntries( days.map( ( day, index ) => [ day, index + 1 ] ) ),
+			range,
+			{ locale: 'en-US' }
+		);
+
+	const mountCalendar = ( result: ReturnType< typeof calendar > ) => {
+		renderChart( { ...result, keyboardNavigation: 'calendar' } );
+		return screen.getByRole( 'grid', { name: /heatmap/i } );
+	};
+
+	const selectedName = ( grid: HTMLElement ) =>
+		within( grid )
+			.getAllByRole( 'gridcell' )
+			.find( cell => cell.id === grid.getAttribute( 'aria-activedescendant' ) )
+			?.getAttribute( 'aria-label' );
+
+	// Mon Jan 29 to Fri Feb 2 2024: the range crosses from row 4 of January into row 0 of February.
+	const boundary = calendar( { start: '2024-01-29', end: '2024-02-02' }, [
+		'2024-01-29',
+		'2024-01-30',
+		'2024-01-31',
+		'2024-02-01',
+		'2024-02-02',
+	] );
+
+	test( 'places hidden and placeholder slots on the grid like measured cells', () => {
+		mountCalendar( boundary );
+		// Column 1 is the row-label track; February starts one gap track after January's 7 columns.
+		expect( screen.getByRole( 'gridcell', { name: /Jan 29/ } ) ).toHaveStyle( {
+			gridColumn: '2',
+			gridRow: '5',
+		} );
+		expect( screen.getByRole( 'gridcell', { name: /Feb 1/ } ) ).toHaveStyle( {
+			gridColumn: '13',
+			gridRow: '1',
+		} );
+		const hidden = screen.getAllByTestId( 'heatmap-cell-hidden' );
+		const placeholders = screen.getAllByTestId( 'heatmap-cell-placeholder' );
+		// January: Jan 1 is a Monday, so its 31 days fill 5 rows; 11 slots are hidden.
+		expect( hidden ).toHaveLength( 11 + 42 - 29 );
+		expect( placeholders ).toHaveLength( 31 - 3 + 29 - 2 );
+		// Rows render in order, so the first hidden slot is February's Mon Jan 29.
+		expect( hidden[ 0 ] ).toHaveStyle( { gridColumn: '10', gridRow: '1' } );
+		expect( placeholders[ 0 ] ).toHaveStyle( { gridColumn: '2', gridRow: '1' } ); // Mon Jan 1
+	} );
+
+	test( 'reaches every measured day across a month boundary with Right and Left', async () => {
+		const grid = mountCalendar( boundary );
+		const user = userEvent.setup();
+		grid.focus();
+		const visited: ( string | null | undefined )[] = [];
+		for ( let press = 0; press < 5; press++ ) {
+			await user.keyboard( '{ArrowRight}' );
+			visited.push( selectedName( grid ) );
+		}
+		expect( visited ).toEqual( [
+			'Mon, Jan 29, 2024: 1',
+			'Tue, Jan 30, 2024: 2',
+			'Wed, Jan 31, 2024: 3',
+			'Thu, Feb 1, 2024: 4',
+			'Fri, Feb 2, 2024: 5',
+		] );
+		// The end of the range holds the selection.
+		await user.keyboard( '{ArrowRight}' );
+		expect( selectedName( grid ) ).toBe( 'Fri, Feb 2, 2024: 5' );
+		await user.keyboard( '{ArrowLeft}{ArrowLeft}' );
+		expect( selectedName( grid ) ).toBe( 'Wed, Jan 31, 2024: 3' );
+	} );
+
+	test( 'steps a week with Down and Up, into the neighboring month past its edge', async () => {
+		const grid = mountCalendar(
+			calendar( { start: '2024-01-22', end: '2024-02-12' }, [ '2024-01-29', '2024-02-05' ] )
+		);
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowRight}' ); // Mon Jan 22
+		await user.keyboard( '{ArrowDown}' );
+		expect( selectedName( grid ) ).toBe( 'Mon, Jan 29, 2024: 1' );
+		await user.keyboard( '{ArrowDown}' );
+		expect( selectedName( grid ) ).toBe( 'Mon, Feb 5, 2024: 2' );
+		await user.keyboard( '{ArrowDown}' );
+		expect( selectedName( grid ) ).toBe( 'Mon, Feb 12, 2024: No data' );
+		await user.keyboard( '{ArrowUp}{ArrowUp}' );
+		expect( selectedName( grid ) ).toBe( 'Mon, Jan 29, 2024: 1' );
+	} );
+
+	test( 'jumps a month with Page Down and Page Up, keeping the slot or taking the nearest day', async () => {
+		const grid = mountCalendar( calendar( { start: '2024-01-01', end: '2024-03-31' }, [] ) );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowRight}' ); // Mon Jan 1
+		await user.keyboard( '{PageDown}' );
+		// February's first-week Monday slot is Jan 29, hidden there, so the nearest day after it.
+		expect( selectedName( grid ) ).toBe( 'Thu, Feb 1, 2024: No data' );
+		await user.keyboard( '{PageDown}' );
+		expect( selectedName( grid ) ).toBe( 'Fri, Mar 1, 2024: No data' );
+		// Back up, the same first-week Friday slot holds a day in both months.
+		await user.keyboard( '{PageUp}' );
+		expect( selectedName( grid ) ).toBe( 'Fri, Feb 2, 2024: No data' );
+		await user.keyboard( '{PageUp}' );
+		expect( selectedName( grid ) ).toBe( 'Fri, Jan 5, 2024: No data' );
+		await user.keyboard( '{PageUp}' );
+		expect( selectedName( grid ) ).toBe( 'Fri, Jan 5, 2024: No data' );
+	} );
+
+	test( 'starts on the first measured day rather than the first Monday', async () => {
+		const grid = mountCalendar( calendar( { start: '2024-02-01', end: '2024-02-29' }, [] ) );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowRight}' );
+		expect( selectedName( grid ) ).toBe( 'Thu, Feb 1, 2024: No data' );
+	} );
+
+	test( 'drops a selection the data no longer holds instead of navigating from it', async () => {
+		const two = calendar( { start: '2024-01-01', end: '2024-02-29' }, [] );
+		const one = calendar( { start: '2024-01-01', end: '2024-01-31' }, [] );
+		const chart = ( result: typeof two ) => (
+			<GlobalChartsProvider>
+				<HeatmapChart width={ 500 } height={ 300 } { ...result } keyboardNavigation="calendar" />
+			</GlobalChartsProvider>
+		);
+		const { rerender } = render( chart( two ) );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{ArrowRight}{PageDown}' );
+		expect( selectedName( grid ) ).toBe( 'Thu, Feb 1, 2024: No data' );
+
+		rerender( chart( one ) );
+		expect( grid ).not.toHaveAttribute( 'aria-activedescendant' );
+		await user.keyboard( '{ArrowDown}' );
+		expect( selectedName( grid ) ).toBe( 'Mon, Jan 1, 2024: No data' );
+	} );
+
+	test( 'ignores Page keys in grid navigation', async () => {
+		renderChart( { data } );
+		const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+		const user = userEvent.setup();
+		grid.focus();
+		await user.keyboard( '{PageDown}' );
+		expect( grid ).not.toHaveAttribute( 'aria-activedescendant' );
+	} );
+} );
+
+describe( 'HeatmapChart naming and focus', () => {
+	test( 'scrolls the keyboard-selected cell into view', async () => {
+		// jsdom has no scrollIntoView; the assertion is that the chart asks for it.
+		const scrollIntoView = jest.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		try {
+			renderChart();
+			const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+			const user = userEvent.setup();
+			grid.focus();
+			await user.keyboard( '{ArrowRight}' );
+			expect( scrollIntoView ).toHaveBeenLastCalledWith( { block: 'nearest', inline: 'nearest' } );
+			expect( ( scrollIntoView.mock.instances[ 0 ] as Element ).id ).toBe(
+				grid.getAttribute( 'aria-activedescendant' )
+			);
+		} finally {
+			// Back to jsdom's default, which has no scrollIntoView.
+			delete ( Element.prototype as Partial< Element > ).scrollIntoView;
+		}
+	} );
+
+	test( 'does not scroll again when the data is replaced but the selection stays', async () => {
+		const scrollIntoView = jest.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		try {
+			const { rerender } = renderChart();
+			const grid = screen.getByRole( 'grid', { name: /heatmap/i } );
+			const user = userEvent.setup();
+			grid.focus();
+			await user.keyboard( '{ArrowRight}' );
+			expect( scrollIntoView ).toHaveBeenCalledTimes( 1 );
+
+			rerender(
+				<GlobalChartsProvider>
+					<HeatmapChart width={ 500 } height={ 300 } data={ [ ...data ] } />
+				</GlobalChartsProvider>
+			);
+			expect( scrollIntoView ).toHaveBeenCalledTimes( 1 );
+		} finally {
+			delete ( Element.prototype as Partial< Element > ).scrollIntoView;
+		}
+	} );
+
+	test( 'renders the empty state without a warning when static groups await data', () => {
+		renderChart( { data: [], columnGroups: [ { label: 'Q1', span: 3 } ] } );
+		expect( screen.getByText( 'No data available' ) ).toBeInTheDocument();
+		expect( console ).not.toHaveWarned();
+	} );
+} );

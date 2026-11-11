@@ -1,0 +1,56 @@
+export declare global {
+	const JPVIDEOPRESS_INITIAL_STATE:
+		| undefined
+		| {
+				API: {
+					WP_API_root: string;
+					WP_API_nonce: string;
+					contentNonce: string;
+				};
+				jetpackStatus: {
+					calypsoSlug: string;
+				};
+				product: {
+					slug: string;
+				};
+				siteData: {
+					id: number | string;
+					title: string;
+					adminUrl: string;
+					slug: string;
+					gmtOffset: number;
+					timezoneString: string;
+					locale: string;
+					hasVideoPressAccess: boolean | null;
+					isVideoPress1TB?: boolean | null;
+					isVideoPressUnlimited?: boolean | null;
+				};
+				assets: {
+					buildUrl: string;
+				};
+				// Feature gates mirrored from the PHP-side filters (see
+				// `Admin_UI::is_chapters_editor_enabled()`). Optional so payloads
+				// rendered before the gates existed still typecheck.
+				features?: {
+					chaptersEditor: boolean;
+					trimCut?: boolean;
+				};
+				// Authoritative accepted-upload map (extension => mimetype) from the
+				// server's `Admin_UI::get_allowed_video_extensions()`.
+				allowedVideoExtensions: Record< string, string >;
+				pricing: null | {
+					title: string;
+					features: string[];
+					yearly: {
+						slug: string;
+						name: string;
+						price: number;
+						priceByMonth: number;
+						currency: string;
+						discount?: number;
+						salePrice?: number;
+						salePriceByMonth?: number;
+					};
+				};
+		  };
+}

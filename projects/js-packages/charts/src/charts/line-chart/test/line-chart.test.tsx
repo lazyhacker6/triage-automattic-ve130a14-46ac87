@@ -1,0 +1,2939 @@
+/* eslint-disable react/jsx-no-bind */
+
+import { render, screen, waitFor, within, act, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { GlyphDiamond } from '@visx/glyph';
+import { createElement, createRef, type ComponentProps } from 'react';
+import { GlobalChartsProvider, defaultTheme } from '../../../providers';
+import { useGlobalChartsContext } from '../../../providers/chart-context/hooks/use-global-charts-context';
+import LineChart, { LineChartUnresponsive, renderDefaultTooltip } from '../line-chart';
+import type { GlobalChartsContextValue } from '../../../providers/chart-context/types';
+import type { DataPointDate, SeriesData } from '../../../types';
+import type { RenderTooltipParams } from '../../../visx/types';
+import type { ChartInstanceRef } from '../../private/chart-instance-context';
+import type { RenderLineGlyphProps } from '../types';
+
+// Mock useElementSize to return non-zero dimensions in jsdom so charts render
+const mockRefCallback = jest.fn();
+jest.mock( '../../../hooks/use-element-size', () => ( {
+	useElementSize: () => [ mockRefCallback, 500, 300 ],
+} ) );
+
+// Drive the zoom state directly so we can assert the clip-path behaviour without
+// simulating a pointer drag (svgPoint geometry is unavailable in jsdom). The rest
+// of the x-zoom module (ZoomClipPath, getZoomClipPathId, etc.) stays real.
+const mockUseXZoom = jest.fn();
+jest.mock( '../../private/x-zoom', () => {
+	const actual = jest.requireActual( '../../private/x-zoom' );
+	return {
+		__esModule: true,
+		...actual,
+		useXZoom: ( ...args: unknown[] ) => mockUseXZoom( ...args ),
+	};
+} );
+
+const passthroughZoom = () => ( {
+	domain: null,
+	drag: null,
+	reset: jest.fn(),
+	handlers: { onPointerDown: jest.fn(), onPointerMove: jest.fn(), onPointerUp: jest.fn() },
+} );
+
+beforeEach( () => {
+	mockUseXZoom.mockReset();
+	mockUseXZoom.mockImplementation( passthroughZoom );
+} );
+
+const customTheme = {
+	...defaultTheme,
+	glyphs: [
+		props =>
+			createElement(
+				'g',
+				{ 'data-testid': 'custom-glyph-diamond' },
+				createElement( GlyphDiamond, {
+					key: props.key,
+					top: props.y,
+					left: props.x,
+					size: props.size * props.size,
+					fill: props.color,
+				} )
+			),
+	],
+};
+
+const THEME_MAP = {
+	default: undefined,
+	custom: customTheme,
+};
+
+describe( 'LineChart', () => {
+	const defaultProps = {
+		width: 500,
+		height: 300,
+		data: [
+			{
+				label: 'Series A',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+				],
+				options: {},
+			},
+		],
+	};
+
+	const renderWithTheme = ( props = {}, themeName = 'default', children = undefined ) => {
+		const theme = THEME_MAP[ themeName ];
+
+		return render(
+			<GlobalChartsProvider theme={ theme }>
+				{ /* @ts-expect-error TODO Fix the missing props */ }
+				<LineChart { ...defaultProps } { ...props }>
+					{ children }
+				</LineChart>
+			</GlobalChartsProvider>
+		);
+	};
+
+	const renderUnwrappedWithTheme = ( props = {}, themeName = 'default', ref = undefined ) => {
+		const theme = THEME_MAP[ themeName ];
+
+		return render(
+			<GlobalChartsProvider theme={ theme }>
+				{ /* @ts-expect-error TODO Fix the missing props */ }
+				<LineChartUnresponsive { ...defaultProps } { ...props } ref={ ref } />
+			</GlobalChartsProvider>
+		);
+	};
+
+	test.each( [ 'auto', 'below-axis' ] as const )(
+		'passes custom tooltip container and crosshair styles with %s placement',
+		async tooltipPlacement => {
+			const user = userEvent.setup();
+			renderWithTheme( {
+				withTooltipCrosshairs: {
+					showVertical: true,
+					showHorizontal: true,
+					verticalStyle: { stroke: 'purple', strokeWidth: 40, strokeOpacity: 0.12 },
+					horizontalStyle: { stroke: 'orange', strokeDasharray: '4 2' },
+				},
+				tooltipPlacement,
+				tooltipStyle: { backgroundColor: 'black', color: 'white', boxShadow: 'none' },
+			} );
+			screen.getByRole( 'application', { name: /line chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}' );
+
+			const vertical = screen.getByTestId( 'xy-chart-tooltip-crosshair-vertical' );
+			expect( vertical ).toHaveAttribute( 'stroke', 'purple' );
+			expect( vertical ).toHaveAttribute( 'stroke-width', '40' );
+			expect( vertical ).toHaveAttribute( 'stroke-opacity', '0.12' );
+			const horizontal = screen.getByTestId( 'xy-chart-tooltip-crosshair-horizontal' );
+			expect( horizontal ).toHaveAttribute( 'stroke', 'orange' );
+			expect( horizontal ).toHaveAttribute( 'stroke-dasharray', '4 2' );
+			expect( screen.getByTestId( 'bounded-tooltip' ) ).toHaveStyle( {
+				'background-color': 'rgb(0, 0, 0)',
+				color: 'rgb(255, 255, 255)',
+				'box-shadow': 'none',
+			} );
+			expect( screen.getByTestId( 'line-chart-tooltip-content' ) ).toHaveStyle( {
+				color: 'rgb(255, 255, 255)',
+			} );
+		}
+	);
+	test( 'passes a color-only tooltipStyle through with no background added', async () => {
+		const user = userEvent.setup();
+		renderWithTheme( { tooltipStyle: { color: 'white' } } );
+		screen.getByRole( 'application', { name: /line chart/i } ).focus();
+		await user.keyboard( '{ArrowRight}' );
+
+		const box = screen.getByTestId( 'bounded-tooltip' );
+		expect( box ).toHaveStyle( { color: 'rgb(255, 255, 255)' } );
+		expect( box ).not.toHaveAttribute( 'style', expect.stringContaining( 'background' ) );
+	} );
+
+	test( 'paints a tooltipStyle background on the box, not on the default content', async () => {
+		const user = userEvent.setup();
+		renderWithTheme( { tooltipStyle: { background: 'black' } } );
+		screen.getByRole( 'application', { name: /line chart/i } ).focus();
+		await user.keyboard( '{ArrowRight}' );
+
+		expect( screen.getByTestId( 'bounded-tooltip' ) ).toHaveStyle( { background: 'black' } );
+		expect( screen.getByTestId( 'line-chart-tooltip-content' ) ).not.toHaveAttribute( 'style' );
+	} );
+
+	test( 'preserves the existing tooltip colors for noncolor overrides', async () => {
+		const user = userEvent.setup();
+		renderWithTheme( { tooltipStyle: { boxShadow: 'none' } } );
+		screen.getByRole( 'application', { name: /line chart/i } ).focus();
+		await user.keyboard( '{ArrowRight}' );
+
+		const content = screen.getByTestId( 'line-chart-tooltip-content' );
+		expect( content.style.getPropertyValue( 'color' ) ).toBe( '' );
+		expect( content.style.getPropertyValue( 'background' ) ).toBe( '' );
+		const container = screen.getByTestId( 'bounded-tooltip' );
+		expect( container ).toHaveStyle( { 'box-shadow': 'none' } );
+		expect( container.style.getPropertyValue( 'background' ) ).toBe( '' );
+		expect( container.style.getPropertyValue( 'color' ) ).not.toBe(
+			'var(--a8c-charts-color-label-inverse)'
+		);
+	} );
+
+	test.each( [ [ 'Escape', '{Escape}' ] ] )(
+		'returns focus to the chart after %s',
+		async ( _name, keys ) => {
+			jest.useFakeTimers();
+			try {
+				const user = userEvent.setup( { advanceTimers: jest.advanceTimersByTime } );
+				renderWithTheme();
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+
+				await user.tab();
+				expect( chart ).toHaveFocus();
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByRole( 'tooltip' ) ).toHaveFocus();
+
+				await user.keyboard( keys );
+				await act( async () => {
+					jest.advanceTimersByTime( 5000 );
+				} );
+				expect( chart ).toHaveFocus();
+				expect( screen.queryByRole( 'tooltip' ) ).not.toBeInTheDocument();
+
+				await user.keyboard( '{ArrowRight}' );
+				const tooltip = screen.getByRole( 'tooltip' );
+				expect( tooltip ).toHaveFocus();
+				expect( tooltip ).toHaveTextContent( 'Series A:10' );
+			} finally {
+				jest.useRealTimers();
+			}
+		}
+	);
+
+	describe( 'Data Validation', () => {
+		test( 'handles empty data array', () => {
+			renderWithTheme( { data: [] } );
+			expect( screen.getByText( /no data available/i ) ).toBeInTheDocument();
+		} );
+
+		test( 'handles single data point', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+					},
+				],
+			} );
+			// Should render without crashing and show the single point
+			expect( screen.getByRole( 'application', { name: /line chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders a bucket with no reading instead of failing the whole chart', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null },
+							{ date: new Date( '2024-01-02' ), value: 20 },
+						],
+					},
+				],
+			} );
+			expect( screen.queryByText( /invalid data/i ) ).not.toBeInTheDocument();
+			expect( screen.getByRole( 'application', { name: /line chart/i } ) ).toBeInTheDocument();
+		} );
+
+		test( 'tooltip reads No data for a bucket with no reading', async () => {
+			const user = userEvent.setup();
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null },
+							{ date: new Date( '2024-01-02' ), value: 20 },
+						],
+					},
+				],
+			} );
+
+			screen.getByRole( 'application', { name: /line chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}' );
+
+			const tooltip = screen.getByTestId( 'chart-tooltip-0' );
+			expect( tooltip ).toHaveTextContent( 'No data' );
+			expect( tooltip ).not.toHaveTextContent( 'Series A:0' );
+		} );
+
+		test( 'keeps a y axis when every visible bucket has no reading', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null },
+							{ date: new Date( '2024-01-02' ), value: null as number | null },
+							{ date: new Date( '2024-01-03' ), value: null as number | null },
+						],
+					},
+				],
+			} );
+
+			expect( screen.queryByText( /invalid data/i ) ).not.toBeInTheDocument();
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent ?? '' );
+			expect( ticks.length ).toBeGreaterThan( 0 );
+			ticks.forEach( tick => {
+				expect( Number.isFinite( Number( tick.replace( /,/g, '' ) ) ) ).toBe( true );
+			} );
+		} );
+
+		test( 'labels a whole-number range smaller than the tick count once per whole number', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 1, 1, 0 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+				],
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0', '1' ] );
+		} );
+
+		test.each( [
+			[ 'small amounts', 0, [ 0.4, 1.2, 2.1, 2.6 ], [ '0', '1', '2' ] ],
+			[ 'amounts under one step', 0, [ 0.31, 0.55, 0.73 ], [ '0', '1' ] ],
+			[ 'cents', 2, [ 0.4, 1.2, 1.6 ], [ '0.00', '0.50', '1.00', '1.50' ] ],
+		] )( 'holds ticks to tickDecimals for %s', ( _, tickDecimals, values, expected ) => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: values.map( ( value, i ) => ( { date: new Date( 2024, i + 2, 1 ), value } ) ),
+					},
+				],
+				options: {
+					yScale: { zero: true },
+					axis: {
+						y: { tickDecimals, tickFormat: ( value: number ) => value.toFixed( tickDecimals ) },
+					},
+				},
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( expected );
+		} );
+
+		test( "leaves a caller's tickValues axis unwidened by tickDecimals", () => {
+			const linePath = ( y: { tickValues: number[]; tickDecimals?: number } ) => {
+				const { unmount } = renderWithTheme( {
+					data: [
+						{
+							label: 'Series A',
+							data: [ 0.31, 0.55, 0.73 ].map( ( value, i ) => ( {
+								date: new Date( 2024, i + 2, 1 ),
+								value,
+							} ) ),
+						},
+					],
+					options: { axis: { y } },
+				} );
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+				// eslint-disable-next-line testing-library/no-node-access -- visx's stroke is a <path class="visx-line">.
+				const d = chart.querySelector( 'path.visx-line' )?.getAttribute( 'd' );
+				unmount();
+				return d;
+			};
+
+			expect( linePath( { tickValues: [ 0.4, 0.6 ], tickDecimals: 0 } ) ).toBe(
+				linePath( { tickValues: [ 0.4, 0.6 ] } )
+			);
+		} );
+
+		test( 'widens with the decimals it ticks at when a hidden series keeps its place in the domain', () => {
+			renderWithTheme( {
+				rescaleYOnVisibilityChange: false,
+				defaultHiddenSeries: [ 'Series B' ],
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 0, 0 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+					{
+						label: 'Series B',
+						data: [ 0.001, 0.003, 0.004 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+				],
+				options: {
+					yScale: { zero: true },
+					axis: { y: { tickDecimals: 2, tickFormat: ( value: number ) => value.toFixed( 2 ) } },
+				},
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0.00', '1.00' ] );
+		} );
+
+		test( 'ignores a hidden fractional series when checking for whole numbers', () => {
+			renderWithTheme( {
+				defaultHiddenSeries: [ 'Series B' ],
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 1, 1, 0 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+					{
+						label: 'Series B',
+						data: [ 0.5, 0.5, 0.5, 0.5 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+				],
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			const ticks = within( chart )
+				.getAllByText( /^-?[\d.,]+$/ )
+				.map( el => el.textContent );
+			expect( ticks.sort() ).toEqual( [ '0', '1' ] );
+		} );
+
+		test( 'keeps fractional ticks when the data has fractions', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 0.5, 1 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+				],
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			expect( within( chart ).getAllByText( /^-?[\d.,]+$/ ).length ).toBeGreaterThan( 2 );
+		} );
+
+		test( "keeps a caller's y tickValues", () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 1 ].map( ( value, i ) => ( { date: new Date( 2024, i + 2, 1 ), value } ) ),
+					},
+				],
+				options: { axis: { y: { tickValues: [ 0, 0.5, 1 ] } } },
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			expect( within( chart ).getAllByText( /^-?[\d.,]+$/ ) ).toHaveLength( 3 );
+		} );
+
+		test( 'keeps every tick on a y domain the caller pinned', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [ 0, 0, 0 ].map( ( value, i ) => ( {
+							date: new Date( 2024, i + 2, 1 ),
+							value,
+						} ) ),
+					},
+				],
+				options: {
+					yScale: { domain: [ 0, 1 ] },
+					axis: { y: { tickFormat: ( value: number ) => `${ Math.round( value * 100 ) }%` } },
+				},
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			expect( within( chart ).getAllByText( /^\d+%$/ ) ).toHaveLength( 6 );
+		} );
+
+		test( 'keeps a positive y domain on a log scale when every visible bucket has no reading', () => {
+			const ref = createRef< ChartInstanceRef >();
+
+			renderUnwrappedWithTheme(
+				{
+					options: { yScale: { type: 'log' } },
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null },
+								{ date: new Date( '2024-01-02' ), value: null as number | null },
+							],
+						},
+					],
+				},
+				'default',
+				ref
+			);
+
+			const domain = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+
+			expect( domain ).toEqual( [ 1, 10 ] );
+		} );
+
+		test.each( [
+			[ 'a flat reading beside buckets with no reading', [ null, null, 1, 1 ], [ 0, 1 ] ],
+			[ 'a flat positive series', [ 5, 5, 5 ], [ 0, 5 ] ],
+			[ 'a flat negative series', [ -3, -3 ], [ -3, 0 ] ],
+			[ 'an all-zero series', [ 0, 0 ], [ 0, 1 ] ],
+		] )( 'starts the y domain at zero for %s', ( _name, values, expected ) => {
+			const ref = createRef< ChartInstanceRef >();
+
+			renderUnwrappedWithTheme(
+				{
+					data: [
+						{
+							label: 'Series A',
+							data: values.map( ( value, index ) => ( {
+								date: new Date( 2024, 0, index + 1 ),
+								value: value as number | null,
+							} ) ),
+						},
+					],
+				},
+				'default',
+				ref
+			);
+
+			const domain = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+
+			expect( domain ).toEqual( expected );
+		} );
+
+		test( 'keeps the y domain off zero for a series that varies', () => {
+			const ref = createRef< ChartInstanceRef >();
+
+			renderUnwrappedWithTheme(
+				{
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 50 },
+								{ date: new Date( '2024-01-02' ), value: 60 },
+							],
+						},
+					],
+				},
+				'default',
+				ref
+			);
+
+			const domain = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+
+			expect( Math.min( ...( domain ?? [] ) ) ).toBeGreaterThan( 0 );
+		} );
+
+		test( 'pins the value axis to a hidden series with real values, not the empty-domain fallback, when rescaleYOnVisibilityChange is false', () => {
+			const ref = createRef< ChartInstanceRef >();
+
+			renderUnwrappedWithTheme(
+				{
+					rescaleYOnVisibilityChange: false,
+					defaultHiddenSeries: [ 'Series A' ],
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10 },
+								{ date: new Date( '2024-01-02' ), value: 20 },
+							],
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: null as number | null },
+								{ date: new Date( '2024-01-02' ), value: null as number | null },
+							],
+						},
+					],
+				},
+				'default',
+				ref
+			);
+
+			const domain = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+
+			expect( domain ).toBeDefined();
+			expect( domain ).not.toEqual( [ 0, 1 ] );
+			expect( Math.max( ...( domain ?? [] ) ) ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'still rejects undefined values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: undefined as number | undefined },
+							{ date: new Date( '2024-01-02' ), value: 20 },
+						],
+					},
+				],
+			} );
+			expect( screen.getByText( /invalid data/i ) ).toBeInTheDocument();
+		} );
+
+		test( 'breaks the line at a bucket with no reading', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2024-01-02' ), value: null as number | null },
+							{ date: new Date( '2024-01-03' ), value: 20 },
+							{ date: new Date( '2024-01-04' ), value: 30 },
+						],
+					},
+				],
+			} );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			// eslint-disable-next-line testing-library/no-node-access -- visx's stroke is a <path class="visx-line">; the axis and grid lines are plain <line> elements sharing that class.
+			const linePath = chart.querySelector( 'path.visx-line' );
+			const gapCount = linePath?.getAttribute( 'd' )?.match( /M/g )?.length;
+			expect( gapCount ).toBe( 2 );
+		} );
+
+		test( 'handles invalid date values', () => {
+			renderWithTheme( {
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( 'invalid' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+					},
+				],
+			} );
+			expect( screen.getByText( /invalid data/i ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Legend', () => {
+		const multiSeriesData = [
+			{
+				label: 'Series A',
+				data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+			},
+			{
+				label: 'Series B',
+				data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+			},
+		];
+
+		test( 'shows legend when showLegend is true', () => {
+			renderWithTheme( { showLegend: true, data: multiSeriesData } );
+			expect( screen.getByText( 'Series A' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Series B' ) ).toBeInTheDocument();
+		} );
+
+		test( 'hides legend when showLegend is false', () => {
+			renderWithTheme( { showLegend: false, data: multiSeriesData } );
+			expect( screen.queryByText( 'Series A' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders composition legend as child component', () => {
+			renderWithTheme( { data: multiSeriesData }, 'default', <LineChart.Legend /> );
+
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+			expect( screen.getByText( 'Series A' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Series B' ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders composition legend regardless of showLegend value', () => {
+			renderWithTheme(
+				{ data: multiSeriesData, showLegend: false },
+				'default',
+				<LineChart.Legend />
+			);
+
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+		} );
+
+		test( 'renders composition legend in top position', () => {
+			renderWithTheme( { data: multiSeriesData }, 'default', <LineChart.Legend position="top" /> );
+
+			// Legend should appear before the chart content in DOM order
+			expect( screen.getAllByTestId( 'legend-item' ) ).toHaveLength( 2 );
+			const html = document.body.innerHTML;
+			expect( html.indexOf( 'data-testid="legend-horizontal"' ) ).toBeLessThan(
+				html.indexOf( 'role="application"' )
+			);
+		} );
+	} );
+
+	describe( 'Gradient Fill', () => {
+		test( 'renders with gradient fill when withGradientFill is true', () => {
+			renderWithTheme( { withGradientFill: true } );
+			expect( screen.getByTestId( 'line-gradient' ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders without gradient fill when withGradientFill is false', () => {
+			renderWithTheme( { withGradientFill: false } );
+			expect( screen.queryByTestId( 'line-gradient' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders gradient with custom configuration', () => {
+			renderWithTheme( {
+				withGradientFill: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {
+							gradient: {
+								from: '#ff0000',
+								to: '#0000ff',
+								fromOpacity: 0.8,
+								toOpacity: 0.2,
+							},
+						},
+					},
+				],
+			} );
+
+			// Check that the gradient is rendered
+			const gradient = screen.getByTestId( 'line-gradient' );
+			expect( gradient ).toBeInTheDocument();
+			expect( gradient.tagName ).toBe( 'linearGradient' );
+		} );
+
+		test( 'renders gradient stops with line color when no color specified', () => {
+			renderWithTheme( {
+				withGradientFill: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {
+							gradient: {
+								stops: [
+									{ offset: '0%', opacity: 0.8 }, // No color specified
+									{ offset: '50%', color: '#ff0000', opacity: 0.5 },
+									{ offset: '100%', opacity: 0 }, // No color specified
+								],
+							},
+						},
+					},
+				],
+			} );
+
+			// Check that the gradient is rendered with stops
+			const gradient = screen.getByTestId( 'line-gradient' );
+			expect( gradient ).toBeInTheDocument();
+			expect( gradient.tagName ).toBe( 'linearGradient' );
+
+			// Check that individual stops are rendered with proper test IDs
+			// Format: line-gradient-stop-{chartId}-{seriesIndex}-{stopIndex}
+			const firstStop = screen.getByTestId( /line-gradient-stop-.*-0-0/ );
+			const secondStop = screen.getByTestId( /line-gradient-stop-.*-0-1/ );
+			const thirdStop = screen.getByTestId( /line-gradient-stop-.*-0-2/ );
+
+			// First stop should use the line color (no color specified)
+			expect( firstStop ).toHaveAttribute( 'stop-opacity', '0.8' );
+			expect( firstStop ).toHaveAttribute( 'offset', '0%' );
+
+			// Middle stop should use the specified color
+			expect( secondStop ).toHaveAttribute( 'stop-color', '#ff0000' );
+			expect( secondStop ).toHaveAttribute( 'stop-opacity', '0.5' );
+			expect( secondStop ).toHaveAttribute( 'offset', '50%' );
+
+			// Last stop should use the line color and have opacity 0
+			expect( thirdStop ).toHaveAttribute( 'stop-opacity', '0' );
+			expect( thirdStop ).toHaveAttribute( 'offset', '100%' );
+		} );
+
+		test( 'renders multiple gradients for multiple series', () => {
+			renderWithTheme( {
+				withGradientFill: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {
+							gradient: {
+								from: '#ff0000',
+								to: '#ff0000',
+								fromOpacity: 0.5,
+								toOpacity: 0,
+							},
+						},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+						],
+						options: {
+							gradient: {
+								from: '#0000ff',
+								to: '#0000ff',
+								fromOpacity: 0.7,
+								toOpacity: 0.1,
+							},
+						},
+					},
+				],
+			} );
+
+			// Check that both gradients are rendered
+			const gradients = screen.getAllByTestId( 'line-gradient' );
+			expect( gradients ).toHaveLength( 2 );
+
+			// Verify both gradients are linearGradient elements
+			expect( gradients[ 0 ].tagName ).toBe( 'linearGradient' );
+			expect( gradients[ 1 ].tagName ).toBe( 'linearGradient' );
+		} );
+
+		test( 'renders gradient with stops when provided', () => {
+			renderWithTheme( {
+				withGradientFill: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {
+							gradient: {
+								from: '#ff0000',
+								to: '#0000ff',
+								stops: [
+									{ offset: '0%', color: '#ff0000', opacity: 1 },
+									{ offset: '50%', color: '#00ff00', opacity: 0.5 },
+									{ offset: '100%', color: '#0000ff', opacity: 0 },
+								],
+							},
+						},
+					},
+				],
+			} );
+
+			// Check that the gradient is rendered
+			// The actual stop elements are children of the gradient, but we can't easily test them
+			// without direct DOM access, so we just verify the gradient exists
+			const gradient = screen.getByTestId( 'line-gradient' );
+			expect( gradient ).toBeInTheDocument();
+			expect( gradient.tagName ).toBe( 'linearGradient' );
+		} );
+
+		test( 'applies gradient to area fill', () => {
+			renderWithTheme( {
+				withGradientFill: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+					},
+				],
+			} );
+
+			// Check that the gradient is rendered and the chart is properly rendered
+			const gradient = screen.getByTestId( 'line-gradient' );
+			expect( gradient ).toBeInTheDocument();
+
+			// Verify that the chart container exists
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			expect( chart ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Axis Configuration', () => {
+		test( 'renders with custom axis options', () => {
+			renderWithTheme( {
+				options: {
+					axis: {
+						x: { orientation: 'top' },
+						y: { orientation: 'right' },
+					},
+				},
+			} );
+			// The chart should render with the custom axis configuration
+			expect( screen.getByRole( 'application', { name: /line chart/i } ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'X-Axis Ticks', () => {
+		test( 'renders ticks in hours.', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01:1:' ), value: 10 },
+							{ date: new Date( '2024-01-01:3:' ), value: 20 },
+							{ date: new Date( '2024-01-01:5:' ), value: 30 },
+							{ date: new Date( '2024-01-01:7:' ), value: 40 },
+							{ date: new Date( '2024-01-01:23:' ), value: 50 },
+						],
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /\d+ [AM|PM]/ );
+			expect( ticks.length ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'renders hour ticks when tickResolution declares the buckets sub-daily.', () => {
+			renderWithTheme( {
+				width: 800,
+				options: { axis: { x: { tickResolution: 'hour' } } },
+				data: [
+					{
+						label: 'Series A',
+						// 23h apart (not 24, and not both midnight): spacing inference would
+						// read this as daily buckets, and the two hours format distinctly.
+						data: [
+							{ date: new Date( '2024-01-01T00:00:00' ), value: 10 },
+							{ date: new Date( '2024-01-01T23:00:00' ), value: 20 },
+						],
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /\d+\s(AM|PM)/ );
+			expect( ticks.length ).toBeGreaterThan( 1 );
+		} );
+
+		// Exactly 24 hours apart: bare hours would print "12 AM" twice and leave the
+		// second day unnamed, so the span reads as multi-day and dates its ticks.
+		test( 'names both days when two sub-daily points sit a full day apart', () => {
+			renderWithTheme( {
+				width: 800,
+				options: { axis: { x: { tickResolution: 'hour' } } },
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01T00:00:00' ), value: 10 },
+							{ date: new Date( '2024-01-02T00:00:00' ), value: 20 },
+						],
+					},
+				],
+			} );
+
+			expect( screen.getByText( 'Jan 1' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Jan 2' ) ).toBeInTheDocument();
+		} );
+
+		test( 'renders ticks in short date format.', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						// Weekly resolution: fine enough to keep full dates on the ticks.
+						data: Array.from( { length: 16 }, ( _, i ) => ( {
+							date: new Date( Date.UTC( 2024, 0, 1 + i * 7 ) ),
+							value: 10 + i,
+						} ) ),
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText(
+				/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d+$/
+			);
+			expect( ticks.length ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'renders month ticks for month-or-coarser buckets within a year.', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2024-04-01' ), value: 20 },
+							{ date: new Date( '2024-07-01' ), value: 30 },
+							{ date: new Date( '2024-10-01' ), value: 40 },
+							{ date: new Date( '2025-03-01' ), value: 50 },
+						],
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^(Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/ );
+			expect( ticks.length ).toBeGreaterThan( 1 );
+		} );
+
+		test( 'keeps the derived month formatter when tickFormat is passed as undefined.', () => {
+			renderWithTheme( {
+				width: 800,
+				options: { axis: { x: { tickFormat: undefined } } },
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2024-04-01' ), value: 20 },
+							{ date: new Date( '2024-07-01' ), value: 30 },
+							{ date: new Date( '2024-10-01' ), value: 40 },
+							{ date: new Date( '2025-03-01' ), value: 50 },
+						],
+					},
+				],
+			} );
+
+			// January is absent: formatMonthOrYearTick renders it as the year instead.
+			const ticks = screen.getAllByText( /^(Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/ );
+			expect( ticks.length ).toBeGreaterThan( 1 );
+			expect(
+				screen.queryByText( /^(February|March|April|June|July|August|September|October)$/ )
+			).not.toBeInTheDocument();
+		} );
+
+		test( 'honors an explicit tickFormat over the derived formatter.', () => {
+			renderWithTheme( {
+				width: 800,
+				options: {
+					axis: {
+						x: {
+							tickFormat: ( date: Date | number ) =>
+								`tick-${ new Date( Number( date ) ).getUTCMonth() }`,
+						},
+					},
+				},
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2024-07-01' ), value: 30 },
+						],
+					},
+				],
+			} );
+
+			expect( screen.getAllByText( /^tick-\d+$/ ).length ).toBeGreaterThan( 0 );
+		} );
+
+		test( 'renders ticks in year format.', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2023-01-01' ), value: 10 },
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2025-01-01' ), value: 50 },
+						],
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^202\d$/ );
+			expect( ticks.length ).toBeGreaterThan( 1 );
+		} );
+	} );
+
+	describe( 'Guess optimal number of ticks', () => {
+		test( 'renders optimal number of ticks.', () => {
+			renderWithTheme( {
+				width: 400,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10 },
+							{ date: new Date( '2024-02-02' ), value: 20 },
+							{ date: new Date( '2024-03-03' ), value: 30 },
+							{ date: new Date( '2024-04-04' ), value: 40 },
+							{ date: new Date( '2024-05-05' ), value: 50 },
+							{ date: new Date( '2024-06-06' ), value: 60 },
+							{ date: new Date( '2024-07-07' ), value: 70 },
+							{ date: new Date( '2024-08-08' ), value: 70 },
+							{ date: new Date( '2024-09-09' ), value: 70 },
+							{ date: new Date( '2024-10-10' ), value: 70 },
+						],
+					},
+				],
+			} );
+
+			// Roughly monthly buckets render month ticks under the resolution-aware formatter.
+			const ticks = screen.getAllByText( /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct)$/ );
+			expect( ticks.length ).toBeLessThan( 6 ); // Not much space
+		} );
+
+		// One repeated instant carries no spacing, so the axis falls back to
+		// calendar dates rather than reading a zero gap as hourly buckets.
+		test( 'renders only one tick when all ticks are the same', () => {
+			renderWithTheme( {
+				width: 800,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01T01:00:00' ), value: 10 },
+							{ date: new Date( '2024-01-01T01:00:00' ), value: 20 },
+							{ date: new Date( '2024-01-01T01:00:00' ), value: 30 },
+						],
+					},
+				],
+			} );
+
+			const ticks = screen.getAllByText( /^[A-Z][a-z]{2} \d{1,2}$/ );
+			expect( ticks ).toHaveLength( 1 );
+		} );
+	} );
+
+	describe( 'Responsiveness', () => {
+		test( 'renders with custom dimensions', () => {
+			renderWithTheme( {
+				width: 800,
+				height: 400,
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10 } ],
+					},
+				],
+			} );
+
+			// Instead of checking styles, verify the chart renders
+			expect( screen.getByTestId( 'line-chart' ) ).toBeInTheDocument();
+			expect( screen.getByRole( 'application', { name: /line chart/i } ) ).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Start Glyphs', () => {
+		test( 'renders start glyphs when withStartGlyphs is true', () => {
+			renderWithTheme( {
+				withStartGlyphs: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			// Check that start glyphs are rendered for each series
+			const startGlyphs = screen.getAllByTestId( /start-glyph/i );
+			expect( startGlyphs ).toHaveLength( 2 ); // One for each series
+		} );
+
+		test( 'does not render start glyphs when withStartGlyphs is false', () => {
+			renderWithTheme( {
+				withStartGlyphs: false,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			// Check that no start glyphs are rendered
+			expect( screen.queryByTestId( /start-glyph/i ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'does not render start glyph when series has empty data', () => {
+			renderWithTheme( {
+				withStartGlyphs: true,
+				data: [
+					{
+						label: 'Empty Series',
+						data: [],
+						options: {},
+					},
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// Should only have one start glyph (from the non-empty series)
+			const startGlyphs = screen.getAllByTestId( /start-glyph/i );
+			expect( startGlyphs ).toHaveLength( 1 );
+		} );
+
+		test( 'Renders custom glyph from theme', () => {
+			renderWithTheme(
+				{
+					withStartGlyphs: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						},
+						{
+							label: 'Series B',
+							data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+						},
+					],
+				},
+				'custom'
+			);
+
+			// We are rendering one custom glyph from theme and the second dataset will be using default glyph.
+			const defaultGlyphs = screen.getAllByTestId( /start-glyph/i );
+			expect( defaultGlyphs ).toHaveLength( 1 );
+
+			const customGlyphs = screen.getAllByTestId( /custom-glyph/i );
+			expect( customGlyphs ).toHaveLength( 1 );
+		} );
+	} );
+
+	describe( 'End Glyphs', () => {
+		test( 'renders end glyphs when withEndGlyphs is true', () => {
+			renderWithTheme( {
+				withEndGlyphs: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			// Check that end glyphs are rendered for each series
+			const endGlyphs = screen.getAllByTestId( /end-glyph/i );
+			expect( endGlyphs ).toHaveLength( 2 ); // One for each series
+		} );
+
+		test( 'does not render end glyphs when withEndGlyphs is false', () => {
+			renderWithTheme( {
+				withEndGlyphs: false,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			// Check that no end glyphs are rendered
+			expect( screen.queryByTestId( /end-glyph/i ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'does not render end glyph when series has empty data', () => {
+			renderWithTheme( {
+				withEndGlyphs: true,
+				data: [
+					{
+						label: 'Empty Series',
+						data: [],
+						options: {},
+					},
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// Should only have one end glyph (from the non-empty series)
+			const endGlyphs = screen.getAllByTestId( /end-glyph/i );
+			expect( endGlyphs ).toHaveLength( 1 );
+		} );
+
+		test( 'renders both start and end glyphs when both are enabled', () => {
+			renderWithTheme( {
+				withStartGlyphs: true,
+				withEndGlyphs: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							{ date: new Date( '2024-01-03' ), value: 30, label: 'Jan 3' },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							{ date: new Date( '2024-01-03' ), value: 35, label: 'Jan 3' },
+						],
+						options: {},
+					},
+				],
+			} );
+
+			// Check that both start and end glyphs are rendered for each series
+			const startGlyphs = screen.getAllByTestId( /start-glyph/i );
+			expect( startGlyphs ).toHaveLength( 2 );
+
+			const endGlyphs = screen.getAllByTestId( /end-glyph/i );
+			expect( endGlyphs ).toHaveLength( 2 );
+		} );
+
+		test( 'renders custom end glyph from theme', () => {
+			renderWithTheme(
+				{
+					withEndGlyphs: true,
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 30, label: 'Jan 2' },
+							],
+						},
+					],
+				},
+				'custom'
+			);
+
+			// We are rendering one custom glyph from theme and the second dataset will be using default glyph.
+			const defaultGlyphs = screen.getAllByTestId( /end-glyph/i );
+			expect( defaultGlyphs ).toHaveLength( 1 );
+
+			const customGlyphs = screen.getAllByTestId( /custom-glyph/i );
+			expect( customGlyphs ).toHaveLength( 1 );
+		} );
+
+		test( 'renders end glyph at correct position for single data point', () => {
+			renderWithTheme( {
+				withEndGlyphs: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+						options: {},
+					},
+				],
+			} );
+
+			// For a single data point, the end glyph should be rendered at that point
+			const endGlyphs = screen.getAllByTestId( /end-glyph/i );
+			expect( endGlyphs ).toHaveLength( 1 );
+		} );
+
+		test( 'puts the start and end glyphs on the first and last real reading', () => {
+			const recorded: { position?: 'start' | 'end'; value: number | null; y: number }[] = [];
+
+			renderWithTheme( {
+				withStartGlyphs: true,
+				withEndGlyphs: true,
+				renderGlyph: ( props: RenderLineGlyphProps< DataPointDate > ) => {
+					recorded.push( {
+						position: props.position,
+						value: props.datum.value ?? null,
+						y: props.y,
+					} );
+					return null;
+				},
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: null as number | null },
+							{ date: new Date( '2024-01-02' ), value: 10 },
+							{ date: new Date( '2024-01-03' ), value: 20 },
+							{ date: new Date( '2024-01-04' ), value: null as number | null },
+						],
+					},
+				],
+			} );
+
+			const start = recorded.find( entry => entry.position === 'start' );
+			const end = recorded.find( entry => entry.position === 'end' );
+
+			expect( start?.value ).toBe( 10 );
+			expect( end?.value ).toBe( 20 );
+			expect( Number.isFinite( start?.y ) ).toBe( true );
+			expect( Number.isFinite( end?.y ) ).toBe( true );
+		} );
+	} );
+
+	describe( 'Legend Glyphs', () => {
+		test( 'renders legend glyphs when withLegendGlyph is true', () => {
+			renderWithTheme( {
+				showLegend: true,
+				withLegendGlyph: true,
+				glyphStyle: {
+					radius: 10,
+				},
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			const legendItems = screen.getAllByTestId( /legend-item/i );
+			expect( legendItems ).toHaveLength( 2 );
+
+			const legendGlyphs = screen.getAllByTestId( /legend-glyph/i );
+			expect( legendGlyphs ).toHaveLength( 2 );
+		} );
+
+		test( 'does not render legend glyphs when withLegendGlyph is false', () => {
+			renderWithTheme( {
+				withLegendGlyph: false,
+				showLegend: true,
+				data: [
+					{
+						label: 'Series A',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+						],
+						options: {},
+					},
+					{
+						label: 'Series B',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			const legendItems = screen.getAllByTestId( /legend-item/i );
+			expect( legendItems ).toHaveLength( 2 );
+
+			expect( screen.queryByTestId( /legend-glyph/i ) ).not.toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Chart Ref Interface', () => {
+		test( 'exposes getScales method via ref', () => {
+			const ref = createRef< ChartInstanceRef >();
+			renderUnwrappedWithTheme( {}, 'default', ref );
+
+			expect( ref.current?.getScales() ).toBeDefined();
+			expect( ref.current?.getScales()?.xScale ).toBeDefined();
+			expect( ref.current?.getScales()?.yScale ).toBeDefined();
+		} );
+
+		test( 'exposes getChartDimensions method via ref', () => {
+			const ref = createRef< ChartInstanceRef >();
+			renderUnwrappedWithTheme( { width: 800, height: 400 }, 'default', ref );
+
+			const dimensions = ref.current?.getChartDimensions();
+			expect( dimensions?.width ).toBe( 800 );
+			expect( dimensions?.height ).toBe( 400 );
+		} );
+	} );
+
+	describe( 'Annotations', () => {
+		const renderWithAnnotations = (
+			children: React.ReactNode,
+			props = {},
+			themeName = 'default'
+		) => {
+			const theme = THEME_MAP[ themeName ];
+
+			return render(
+				<GlobalChartsProvider theme={ theme }>
+					{ /* @ts-expect-error TODO Fix the missing props */ }
+					<LineChart { ...defaultProps } { ...props }>
+						{ children }
+					</LineChart>
+				</GlobalChartsProvider>
+			);
+		};
+
+		test( 'renders annotations when using compound component pattern', async () => {
+			const width = 500;
+			const height = 300;
+
+			renderWithAnnotations(
+				<LineChart.AnnotationsOverlay>
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } }
+						title="Annotation 1"
+						subtitle="Annotation 1 subtitle"
+					/>
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' } }
+						title="Annotation 2"
+					/>
+				</LineChart.AnnotationsOverlay>,
+				{ width, height }
+			);
+
+			const overlay = await screen.findByTestId( 'line-chart-annotations-overlay' );
+			expect( overlay ).toBeInTheDocument();
+			expect( overlay ).toHaveAttribute( 'width', width.toString() );
+			expect( overlay ).toHaveAttribute( 'height', height.toString() );
+
+			await waitFor( () => {
+				expect( screen.getByText( 'Annotation 1' ) ).toBeInTheDocument();
+			} );
+			await waitFor( () => {
+				expect( screen.getByText( 'Annotation 1 subtitle' ) ).toBeInTheDocument();
+			} );
+			await waitFor( () => {
+				expect( screen.getByText( 'Annotation 2' ) ).toBeInTheDocument();
+			} );
+		} );
+
+		test( 'skips rendering an annotation when it is malformed', async () => {
+			renderWithAnnotations(
+				<LineChart.AnnotationsOverlay>
+					{ /* @ts-expect-error Testing malformed annotation without required datum prop */ }
+					<LineChart.Annotation title="Annotation 1" subtitle="Annotation 1 subtitle" />
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' } }
+						title="Annotation 2"
+					/>
+				</LineChart.AnnotationsOverlay>
+			);
+
+			await waitFor( () => {
+				expect( screen.getByText( 'Annotation 2' ) ).toBeInTheDocument();
+			} );
+			expect( screen.queryByText( 'Annotation 1' ) ).not.toBeInTheDocument();
+			expect( screen.queryByText( 'Annotation 1 subtitle' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'does not render annotations when no AnnotationsOverlay is provided', async () => {
+			renderWithTheme( {} );
+
+			await waitFor( () => {
+				expect( screen.queryByTestId( 'line-chart-annotations-overlay' ) ).not.toBeInTheDocument();
+			} );
+			await waitFor( () => {
+				expect( screen.queryByTestId( 'annotation-0' ) ).not.toBeInTheDocument();
+			} );
+		} );
+
+		test( 'does not render annotations when AnnotationsOverlay is empty', () => {
+			renderWithAnnotations( <LineChart.AnnotationsOverlay></LineChart.AnnotationsOverlay> );
+
+			expect( screen.queryByTestId( 'annotation-0' ) ).not.toBeInTheDocument();
+		} );
+
+		test( 'renders annotations with zero values', async () => {
+			renderWithAnnotations(
+				<LineChart.AnnotationsOverlay>
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-01' ), value: 0, label: 'Jan 1' } }
+						title="Zero Value Annotation"
+						subtitle="This point has a value of 0"
+					/>
+				</LineChart.AnnotationsOverlay>
+			);
+
+			await waitFor( () => {
+				expect( screen.getByText( 'Zero Value Annotation' ) ).toBeInTheDocument();
+			} );
+			await waitFor( () => {
+				expect( screen.getByText( 'This point has a value of 0' ) ).toBeInTheDocument();
+			} );
+		} );
+
+		test( 'renders annotations with custom label renderer', async () => {
+			renderWithAnnotations(
+				<LineChart.AnnotationsOverlay>
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } }
+						title="Annotation 1"
+						subtitle="Annotation 1 subtitle"
+						renderLabel={ ( { title, subtitle } ) => (
+							<div data-testid="custom-label">
+								{ title }
+								{ subtitle && <span>{ subtitle }</span> }
+							</div>
+						) }
+					/>
+				</LineChart.AnnotationsOverlay>
+			);
+
+			await waitFor( () => {
+				expect( screen.getByTestId( 'custom-label' ) ).toBeInTheDocument();
+			} );
+		} );
+
+		test( 'renders annotations with custom label popover renderer', async () => {
+			renderWithAnnotations(
+				<LineChart.AnnotationsOverlay>
+					<LineChart.Annotation
+						datum={ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } }
+						title="Annotation 1"
+						subtitle="Annotation 1 subtitle"
+						renderLabel={ ( { title, subtitle } ) => (
+							<div data-testid="custom-label">
+								{ title }
+								{ subtitle && <span>{ subtitle }</span> }
+							</div>
+						) }
+						renderLabelPopover={ ( { title, subtitle } ) => (
+							<div data-testid="custom-label-popover">
+								{ title }
+								{ subtitle && <span>{ subtitle }</span> }
+							</div>
+						) }
+					/>
+				</LineChart.AnnotationsOverlay>
+			);
+
+			await waitFor( () => {
+				expect( screen.getByTestId( 'custom-label-popover' ) ).toBeInTheDocument();
+			} );
+		} );
+	} );
+
+	describe( 'Keyboard Navigation Accessibility', () => {
+		describe( 'Chart Focus and Accessibility Attributes', () => {
+			test( 'chart container has proper accessibility attributes', () => {
+				renderWithTheme();
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+
+				expect( chart ).toHaveAttribute( 'tabIndex', '0' );
+				expect( chart ).toHaveAttribute( 'role', 'application' );
+				expect( chart ).toHaveAttribute( 'aria-label', 'Line chart' );
+				expect( screen.queryByLabelText( 'XYChart' ) ).not.toBeInTheDocument();
+			} );
+
+			test( 'chart container can receive focus', async () => {
+				const user = userEvent.setup();
+				renderWithTheme();
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+
+				await user.tab();
+				expect( chart ).toHaveFocus();
+			} );
+		} );
+
+		describe( 'Activation', () => {
+			const SERIES_A = {
+				label: 'Series A',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10 },
+					{ date: new Date( '2024-01-02' ), value: 20 },
+				],
+				options: {},
+			};
+			const SERIES_B = {
+				label: 'Series B',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 15 },
+					{ date: new Date( '2024-01-02' ), value: 25 },
+				],
+				options: {},
+			};
+
+			// Navigation steps through x positions; the first series names the point.
+			test( 'Enter hands the selected point to onDatumActivate', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { data: [ SERIES_A, SERIES_B ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /line chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}{Enter}' );
+
+				expect( onDatumActivate ).toHaveBeenCalledTimes( 1 );
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					datum: SERIES_A.data[ 1 ],
+					index: 1,
+					key: 'Series A',
+				} );
+			} );
+
+			test.each( [
+				[ 'the first is hidden', [ { ...SERIES_A, data: SERIES_A.data.slice( 0, 1 ) }, SERIES_B ] ],
+				[
+					'the first visible series is empty',
+					[ SERIES_A, { ...SERIES_A, label: 'Empty', data: [] }, SERIES_B ],
+				],
+			] )( 'Enter reaches every visible point when %s', async ( _, data ) => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( {
+					data,
+					defaultHiddenSeries: [ 'Series A' ],
+					chartId: 'activation-hidden-first',
+					onDatumActivate,
+				} );
+
+				screen.getByRole( 'application', { name: /line chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}{ArrowRight}{Enter}' );
+
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					datum: SERIES_B.data[ 1 ],
+					index: 1,
+					key: 'Series B',
+				} );
+			} );
+
+			test( 'Enter with no point selected activates nothing', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				renderWithTheme( { data: [ SERIES_A ], onDatumActivate } );
+
+				screen.getByRole( 'application', { name: /line chart/i } ).focus();
+				await user.keyboard( '{Enter}' );
+
+				expect( onDatumActivate ).not.toHaveBeenCalled();
+			} );
+		} );
+
+		describe( 'Keyboard stops by date', () => {
+			const point = ( day: number, value: number | null ) => ( {
+				date: new Date( `2024-01-0${ day }` ),
+				value,
+			} );
+			const rowsTooltip = ( { tooltipData }: RenderTooltipParams< DataPointDate > ) => (
+				<div data-testid="rows-tooltip">
+					{ Object.values( tooltipData?.datumByKey ?? {} )
+						.map( ( { key, datum } ) => `${ key }=${ datum.value }` )
+						.sort()
+						.join( ';' ) }
+				</div>
+			);
+			const renderRows = ( data: SeriesData[], props = {} ) => {
+				renderWithTheme( { data, withTooltips: true, renderTooltip: rowsTooltip, ...props } );
+				screen.getByRole( 'application', { name: /line chart/i } ).focus();
+			};
+
+			it( 'stops at every date any series has and reads each series there', async () => {
+				const user = userEvent.setup();
+				renderRows( [
+					{ label: 'A', data: [ point( 1, 1 ), point( 2, 2 ), point( 3, 3 ) ] },
+					{ label: 'B', data: [ point( 2, 20 ), point( 4, 40 ) ] },
+				] );
+
+				const expected = [
+					{ text: 'A=1', stop: 0 },
+					{ text: 'A=2;B=20', stop: 1 },
+					{ text: 'A=3', stop: 2 },
+					{ text: 'B=40', stop: 3 },
+					{ text: 'B=40', stop: 3 },
+				];
+				for ( const { text, stop } of expected ) {
+					await user.keyboard( '{ArrowRight}' );
+					await waitFor( () => {
+						expect( screen.getByTestId( `chart-tooltip-${ stop }` ) ).toBeInTheDocument();
+						expect( screen.getByTestId( 'rows-tooltip' ) ).toHaveTextContent(
+							new RegExp( `^${ text }$` )
+						);
+					} );
+				}
+			} );
+
+			it( 'keeps a null point at the selected date', async () => {
+				const user = userEvent.setup();
+				renderRows( [
+					{ label: 'A', data: [ point( 1, 1 ), point( 2, 2 ) ] },
+					{ label: 'B', data: [ point( 1, null ), point( 2, 20 ) ] },
+				] );
+
+				await user.keyboard( '{ArrowRight}' );
+				await expect( screen.findByTestId( 'rows-tooltip' ) ).resolves.toHaveTextContent(
+					/^A=1;B=null$/
+				);
+			} );
+
+			it( 'activates the first visible series with a point at the selected date', async () => {
+				const user = userEvent.setup();
+				const onDatumActivate = jest.fn();
+				const seriesB = { label: 'Series B', data: [ point( 1, 10 ), point( 2, 20 ) ] };
+				renderRows( [ { label: 'Series A', data: [ point( 2, 2 ) ] }, seriesB ], {
+					onDatumActivate,
+				} );
+
+				await user.keyboard( '{ArrowRight}{Enter}' );
+
+				expect( onDatumActivate ).toHaveBeenCalledWith( {
+					key: 'Series B',
+					index: 0,
+					datum: seriesB.data[ 0 ],
+				} );
+			} );
+		} );
+
+		describe( 'Arrow Key Navigation', () => {
+			test.each( [ 'auto', 'below-axis' ] as const )(
+				'right arrow key navigates with %s tooltips',
+				async tooltipPlacement => {
+					const user = userEvent.setup();
+					renderWithTheme( {
+						tooltipPlacement,
+						data: [
+							{
+								label: 'Series A',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+									{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+								],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+									{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+								],
+								options: {},
+							},
+						],
+					} );
+
+					const chart = screen.getByRole( 'application', { name: /line chart/i } );
+					chart.focus();
+
+					// Single tab should focus on the first tooltip.
+					await user.keyboard( '{ArrowRight}' );
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveAttribute( 'role', 'tooltip' );
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveAttribute(
+						'aria-atomic',
+						'true'
+					);
+					expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+					expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+
+					// Second tab should focus on the second tooltip.
+					await user.keyboard( '{ArrowRight}' );
+					expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveFocus();
+					expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series B' );
+					expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+				}
+			);
+
+			test( 'left arrow key navigates to previous data point', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+				chart.focus();
+
+				// Right arrow key should focus on the first tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+
+				// Right arrow key should focus on the second tooltip.
+				await user.keyboard( '{ArrowRight}' );
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-1' ) ).toHaveTextContent( 'Series B' );
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+
+				// Left arrow key should focus on the first tooltip.
+				await user.keyboard( '{ArrowLeft}' );
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+				expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( 'Series A' );
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+			} );
+		} );
+
+		describe( 'Tab Key Navigation', () => {
+			test( 'tab key exits navigation when reaching end of data points', async () => {
+				const user = userEvent.setup();
+				renderWithTheme( {
+					data: [
+						{
+							label: 'Series A',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+							],
+							options: {},
+						},
+						{
+							label: 'Series B',
+							data: [
+								{ date: new Date( '2024-01-01' ), value: 15, label: 'Jan 1' },
+								{ date: new Date( '2024-01-02' ), value: 25, label: 'Jan 2' },
+							],
+							options: {},
+						},
+					],
+				} );
+
+				const chart = screen.getByRole( 'application', { name: /line chart/i } );
+				chart.focus();
+
+				// Chart should be in focus.
+				expect( chart ).toHaveFocus();
+
+				// Clicking tab should not open any tooltips.
+				await user.tab();
+				expect( screen.queryByTestId( 'chart-tooltip-1' ) ).not.toBeInTheDocument();
+				expect( screen.queryByTestId( 'chart-tooltip-0' ) ).not.toBeInTheDocument();
+				// Chart should no longer be in focus.
+				expect( chart ).not.toHaveFocus();
+			} );
+		} );
+
+		test( 'keyboard navigation works with custom tooltip renderer', async () => {
+			const user = userEvent.setup();
+			const customTooltipRenderer = jest.fn( ( { tooltipData } ) => (
+				<div role="tooltip" data-testid="custom-tooltip">
+					Custom:{ ' ' }
+					{ tooltipData?.nearestDatum?.datum?.date?.toLocaleDateString( 'ja-JP', {
+						weekday: 'long',
+						year: 'numeric',
+						month: 'long',
+						day: 'numeric',
+					} ) }
+				</div>
+			) );
+
+			renderWithTheme( { renderTooltip: customTooltipRenderer } );
+
+			const chart = screen.getByRole( 'application', { name: /line chart/i } );
+			chart.focus();
+
+			// Click on right arrow key to focus on the first tooltip.
+			await user.keyboard( '{ArrowRight}' );
+			expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveFocus();
+			expect( screen.getByTestId( 'chart-tooltip-0' ) ).toHaveTextContent( '2024年1月1日月曜日' );
+
+			const customTooltip = screen.getByTestId( 'custom-tooltip' );
+			expect( customTooltip ).toBeInTheDocument();
+			expect( customTooltipRenderer ).toHaveBeenCalled();
+		} );
+	} );
+
+	describe( 'Interactive Legend', () => {
+		it( 'filters series when interactive legend is enabled and series is toggled', async () => {
+			const user = userEvent.setup();
+
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						{ ...defaultProps }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-interactive-chart"
+					/>
+				</GlobalChartsProvider>
+			);
+
+			// Click on first legend item to hide it
+			const legendItems = screen.getAllByRole( 'button' );
+			await user.click( legendItems[ 0 ] );
+
+			// The series should now be hidden (aria-pressed = false)
+			const legendItem = screen.getAllByRole( 'button' )[ 0 ];
+			expect( legendItem ).toHaveAttribute( 'aria-pressed', 'false' );
+		} );
+
+		it.each( [ 'Series A', 'Series B' ] )(
+			'leaves %s out of the keyboard tooltip once it is hidden',
+			async hiddenLabel => {
+				const user = userEvent.setup();
+				const visibleLabel = hiddenLabel === 'Series A' ? 'Series B' : 'Series A';
+				const renderTooltip = jest.fn( renderDefaultTooltip );
+
+				render(
+					<GlobalChartsProvider>
+						<LineChartUnresponsive
+							width={ 500 }
+							height={ 300 }
+							data={ [
+								defaultProps.data[ 0 ],
+								{
+									label: 'Series B',
+									data: [
+										{ date: new Date( '2024-01-01' ), value: 15 },
+										{ date: new Date( '2024-01-02' ), value: 25 },
+									],
+								},
+							] }
+							withGradientFill={ false }
+							showLegend={ true }
+							legend={ { interactive: true } }
+							renderTooltip={ renderTooltip }
+							chartId={ `test-keyboard-tooltip-hidden-${ hiddenLabel }` }
+						/>
+					</GlobalChartsProvider>
+				);
+
+				await user.click( screen.getByRole( 'button', { name: new RegExp( hiddenLabel ) } ) );
+				screen.getByRole( 'application', { name: /line chart/i } ).focus();
+				await user.keyboard( '{ArrowRight}' );
+
+				const tooltip = await screen.findByTestId( 'line-chart-tooltip-content' );
+				expect( tooltip ).toHaveTextContent( visibleLabel );
+				expect( tooltip ).not.toHaveTextContent( hiddenLabel );
+				expect( renderTooltip ).toHaveBeenLastCalledWith(
+					expect.objectContaining( {
+						tooltipData: expect.objectContaining( {
+							nearestDatum: expect.objectContaining( { key: visibleLabel } ),
+						} ),
+					} )
+				);
+			}
+		);
+
+		it( 'does not leave a series hidden mid-navigation in the keyboard tooltip', async () => {
+			const user = userEvent.setup();
+
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						data={ [
+							defaultProps.data[ 0 ],
+							{
+								label: 'Series B',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 15 },
+									{ date: new Date( '2024-01-02' ), value: 25 },
+								],
+							},
+						] }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-keyboard-tooltip-hide-mid-navigation"
+					/>
+				</GlobalChartsProvider>
+			);
+
+			screen.getByRole( 'application', { name: /line chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}' );
+			await expect(
+				screen.findByTestId( 'line-chart-tooltip-content' )
+			).resolves.toHaveTextContent( 'Series A' );
+
+			await user.click( screen.getByRole( 'button', { name: /Series A/ } ) );
+
+			await waitFor( () =>
+				expect( screen.queryByTestId( 'line-chart-tooltip-content' ) ).not.toBeInTheDocument()
+			);
+		} );
+
+		it( 'drops a series hidden programmatically from an open keyboard tooltip', async () => {
+			const user = userEvent.setup();
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						chartId="test-keyboard-tooltip-programmatic-hide"
+						data={ [
+							{
+								label: 'Series A',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 10 },
+									{ date: new Date( '2024-01-02' ), value: 20 },
+									{ date: new Date( '2024-01-03' ), value: 30 },
+								],
+							},
+							{
+								label: 'Series B',
+								data: [
+									{ date: new Date( '2024-01-01' ), value: 15 },
+									{ date: new Date( '2024-01-02' ), value: 25 },
+								],
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			screen.getByRole( 'application', { name: /line chart/i } ).focus();
+			await user.keyboard( '{ArrowRight}{ArrowRight}' );
+			await expect(
+				screen.findByTestId( 'line-chart-tooltip-content' )
+			).resolves.toHaveTextContent( 'Series A' );
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-keyboard-tooltip-programmatic-hide', 'Series A' );
+			} );
+
+			await waitFor( () => expect( screen.queryByText( 'Series A:' ) ).not.toBeInTheDocument() );
+			expect( screen.getByTestId( 'line-chart-tooltip-content' ) ).toHaveTextContent( 'Series B' );
+		} );
+
+		it( 'does not filter series when legendInteractive is false', () => {
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						{ ...defaultProps }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-non-interactive-chart"
+					/>
+				</GlobalChartsProvider>
+			);
+
+			// Legend items should not be interactive
+			const buttons = screen.queryAllByRole( 'button' );
+			expect( buttons ).toHaveLength( 0 );
+		} );
+
+		it( 'shows all series when nothing has been hidden', () => {
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						{ ...defaultProps }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						// No chartId provided
+					/>
+				</GlobalChartsProvider>
+			);
+
+			// All legend items should be visible (not hidden)
+			const legendItems = screen.getAllByRole( 'button' );
+			legendItems.forEach( item => {
+				expect( item ).toHaveAttribute( 'aria-pressed', 'true' );
+			} );
+		} );
+
+		it( 'hides a series programmatically when the legend is not interactive', () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-programmatic-line"
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			expect( screen.queryByText( /all series are hidden/i ) ).not.toBeInTheDocument();
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-programmatic-line', 'Series A' );
+				context.toggleSeriesVisibility( 'test-programmatic-line', 'Series B' );
+			} );
+
+			expect( screen.getByText( /all series are hidden/i ) ).toBeInTheDocument();
+		} );
+
+		it( 'omits the click instruction when the legend cannot be clicked', () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-empty-copy-line"
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-empty-copy-line', 'Series A' );
+			} );
+
+			expect( screen.getByText( 'All series are hidden.' ) ).toBeInTheDocument();
+			expect( screen.queryByText( /click legend items/i ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'pins the value axis across a programmatic hide when rescaleYOnVisibilityChange is false', () => {
+			let context: GlobalChartsContextValue;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+			const ref = createRef< ChartInstanceRef >();
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: false } }
+						chartId="test-programmatic-pin-line"
+						rescaleYOnVisibilityChange={ false }
+						ref={ ref }
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 200, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			const before = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+			expect( before ).toBeDefined();
+
+			act( () => {
+				context.toggleSeriesVisibility( 'test-programmatic-pin-line', 'Series B' );
+			} );
+
+			const after = (
+				ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined
+			 )?.domain();
+			expect( after ).toEqual( before );
+		} );
+	} );
+
+	describe( 'pointer events', () => {
+		let screenTransform: PropertyDescriptor | undefined;
+
+		beforeAll( () => {
+			screenTransform = Object.getOwnPropertyDescriptor( SVGElement.prototype, 'getScreenCTM' );
+			// jsdom lacks the SVG transform used by visx to convert pointer coordinates.
+			Object.defineProperty( SVGElement.prototype, 'getScreenCTM', {
+				configurable: true,
+				value: () => null,
+			} );
+		} );
+
+		afterAll( () => {
+			if ( screenTransform ) {
+				Object.defineProperty( SVGElement.prototype, 'getScreenCTM', screenTransform );
+			} else {
+				Reflect.deleteProperty( SVGElement.prototype, 'getScreenCTM' );
+			}
+		} );
+
+		const pointer = ( type: string, clientX: number, clientY: number ) => {
+			// visx owns the pointer capture rect and does not expose an attribute prop for it.
+			const chart = screen.getByRole( 'application' );
+			// eslint-disable-next-line testing-library/no-node-access
+			const target = chart.querySelector( 'svg > rect[fill="transparent"]' );
+			fireEvent( target, new MouseEvent( type, { bubbles: true, clientX, clientY } ) );
+		};
+
+		const renderWithHandlers = ( data: SeriesData[], props = {} ) => {
+			const handlers = {
+				onPointerDown: jest.fn(),
+				onPointerMove: jest.fn(),
+				onPointerUp: jest.fn(),
+			};
+			mockUseXZoom.mockImplementation( () => ( { ...passthroughZoom(), handlers } ) );
+			const ref = createRef< ChartInstanceRef >();
+			renderUnwrappedWithTheme( { data, ...props }, 'default', ref );
+			const xScale = ref.current?.getScales()?.xScale as ( date: Date ) => number;
+			const yScale = ref.current?.getScales()?.yScale as ( value: number ) => number;
+			return { handlers, xScale, yScale };
+		};
+
+		const series = ( label: string, values: ( number | null )[] ) => ( {
+			label,
+			options: {},
+			data: values.map( ( value, index ) => ( {
+				date: new Date( 2024, 0, index + 1 ),
+				value,
+			} ) ),
+		} );
+
+		test( 'reports a bucket with no reading on pointer down, move and up', () => {
+			const data = [ series( 'Series A', [ null, 10, 20 ] ) ];
+			const { handlers, xScale } = renderWithHandlers( data );
+			const x = xScale( data[ 0 ].data[ 0 ].date );
+
+			for ( const [ type, handler ] of [
+				[ 'pointerdown', handlers.onPointerDown ],
+				[ 'pointermove', handlers.onPointerMove ],
+				[ 'pointerup', handlers.onPointerUp ],
+			] as const ) {
+				pointer( type, x, 150 );
+				expect( handler ).toHaveBeenCalledTimes( 1 );
+				expect( handler ).toHaveBeenLastCalledWith(
+					expect.objectContaining( { key: 'Series A', index: 0, datum: data[ 0 ].data[ 0 ] } )
+				);
+			}
+		} );
+
+		test( 'prefers a series with a reading over one without at the same bucket', () => {
+			const data = [ series( 'Series A', [ null, 10 ] ), series( 'Series B', [ 5, 10 ] ) ];
+			const { handlers, xScale, yScale } = renderWithHandlers( data );
+
+			pointer( 'pointerdown', xScale( data[ 0 ].data[ 0 ].date ), yScale( 10 ) );
+
+			expect( handlers.onPointerDown ).toHaveBeenCalledTimes( 1 );
+			expect( handlers.onPointerDown ).toHaveBeenLastCalledWith(
+				expect.objectContaining( { key: 'Series B', index: 0 } )
+			);
+		} );
+
+		test( 'reports nothing for a reading the log scale cannot place', () => {
+			const data = [ series( 'Series A', [ 0, 10 ] ) ];
+			const { handlers, xScale } = renderWithHandlers( data, {
+				options: { yScale: { type: 'log', domain: [ 1, 100 ] } },
+			} );
+
+			pointer( 'pointerdown', xScale( data[ 0 ].data[ 0 ].date ), 150 );
+
+			expect( handlers.onPointerDown ).not.toHaveBeenCalled();
+		} );
+
+		test( 'reports the nearest bucket in a long series', () => {
+			const data = [
+				series(
+					'Series A',
+					Array.from( { length: 60 }, ( _, i ) => i )
+				),
+			];
+			const { handlers, xScale } = renderWithHandlers( data );
+			const between =
+				( xScale( data[ 0 ].data[ 37 ].date ) * 2 + xScale( data[ 0 ].data[ 38 ].date ) ) / 3;
+
+			pointer( 'pointerdown', between, 150 );
+
+			expect( handlers.onPointerDown ).toHaveBeenLastCalledWith(
+				expect.objectContaining( { index: 37, datum: data[ 0 ].data[ 37 ] } )
+			);
+		} );
+
+		test( 'reports the series nearest the pointer when every series has a reading', () => {
+			const data = [ series( 'Series A', [ 10, 10 ] ), series( 'Series B', [ 20, 20 ] ) ];
+			const { handlers, xScale, yScale } = renderWithHandlers( data );
+
+			pointer( 'pointerdown', xScale( data[ 0 ].data[ 1 ].date ), yScale( 11 ) );
+
+			expect( handlers.onPointerDown ).toHaveBeenLastCalledWith(
+				expect.objectContaining( { key: 'Series A', index: 1 } )
+			);
+		} );
+	} );
+
+	// The line is not animated, so it clips only while actually zoomed.
+	test( 'clips the series to the plot when zoomed', () => {
+		mockUseXZoom.mockImplementation( () => ( {
+			domain: [ new Date( '2024-01-01' ), new Date( '2024-01-02' ) ],
+			drag: null,
+			reset: jest.fn(),
+			handlers: { onPointerDown: jest.fn(), onPointerMove: jest.fn(), onPointerUp: jest.fn() },
+		} ) );
+		renderUnwrappedWithTheme( { zoomable: true, chartId: 'zoomtest' } );
+
+		expect( screen.getByTestId( 'chart-series-clip-group' ) ).toHaveAttribute(
+			'clip-path',
+			'url(#chart-zoom-clip-zoomtest)'
+		);
+	} );
+
+	describe( 'Value axis baseline', () => {
+		const steadySeries = [
+			{
+				label: 'Views',
+				data: [ 921, 989, 954, 924, 967, 933, 978 ].map( ( value, day ) => ( {
+					date: new Date( 2024, 0, day + 1 ),
+					value,
+					label: `Jan ${ day + 1 }`,
+				} ) ),
+				options: {},
+			},
+		];
+		const twoSeries = [
+			{
+				label: 'Views',
+				data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+				options: {},
+			},
+			{
+				label: 'Visitors',
+				data: [ { date: new Date( '2024-01-01' ), value: 200, label: 'Jan 1' } ],
+				options: {},
+			},
+		];
+
+		const renderForDomain = (
+			props: Partial< ComponentProps< typeof LineChartUnresponsive > >
+		) => {
+			let context: GlobalChartsContextValue | undefined;
+			const Grab = () => {
+				context = useGlobalChartsContext();
+				return null;
+			};
+			const ref = createRef< ChartInstanceRef >();
+
+			render(
+				<GlobalChartsProvider>
+					<Grab />
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						chartId="line-baseline"
+						ref={ ref }
+						data={ steadySeries }
+						{ ...props }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			return {
+				domain: () =>
+					( ref.current?.getScales()?.yScale as { domain: () => number[] } | undefined )?.domain(),
+				hide: ( label: string ) =>
+					act( () => context?.toggleSeriesVisibility( 'line-baseline', label ) ),
+			};
+		};
+
+		it( 'fits the axis to the data by default', () => {
+			expect( renderForDomain( {} ).domain() ).toEqual( [ 920, 990 ] );
+		} );
+
+		it( 'rounds the top of a zero-based axis from zero, not from the data floor', () => {
+			expect( renderForDomain( { options: { yScale: { zero: true } } } ).domain() ).toEqual( [
+				0, 1000,
+			] );
+		} );
+
+		it( 'leaves a log scale to fit the data, since it cannot hold zero', () => {
+			const { domain } = renderForDomain( { options: { yScale: { type: 'log', zero: true } } } );
+			expect( domain() ).toEqual( [ 100, 1000 ] );
+		} );
+
+		it( 'extends a zero-based axis below zero when a series goes negative', () => {
+			const { domain } = renderForDomain( {
+				options: { yScale: { zero: true } },
+				data: [
+					{
+						label: 'Net change',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: -15, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 30, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( domain() ).toEqual( [ -15, 30 ] );
+		} );
+
+		it( 'gives an all-zero series an axis from 0 to 1 instead of a spanless one', () => {
+			const { domain } = renderForDomain( {
+				options: { yScale: { zero: true } },
+				data: [
+					{
+						label: 'Views',
+						data: [
+							{ date: new Date( '2024-01-01' ), value: 0, label: 'Jan 1' },
+							{ date: new Date( '2024-01-02' ), value: 0, label: 'Jan 2' },
+						],
+						options: {},
+					},
+				],
+			} );
+			expect( domain() ).toEqual( [ 0, 1 ] );
+		} );
+
+		it( 'rescales a zero-based axis to the visible series', () => {
+			const { domain, hide } = renderForDomain( {
+				options: { yScale: { zero: true } },
+				data: twoSeries,
+			} );
+			expect( domain() ).toEqual( [ 0, 200 ] );
+
+			hide( 'Visitors' );
+
+			expect( domain() ).toEqual( [ 0, 20 ] );
+		} );
+
+		it( 'pins a zero-based axis when rescaleYOnVisibilityChange is false', () => {
+			const { domain, hide } = renderForDomain( {
+				options: { yScale: { zero: true } },
+				rescaleYOnVisibilityChange: false,
+				data: twoSeries,
+			} );
+
+			hide( 'Visitors' );
+
+			expect( domain() ).toEqual( [ 0, 200 ] );
+		} );
+	} );
+
+	describe( 'Legend group collapsing', () => {
+		const comparisonPair = [
+			{
+				label: 'Views',
+				group: 'views',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+				],
+			},
+			{
+				label: 'Views — previous',
+				group: 'views',
+				options: { type: 'comparison' as const },
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 8, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 16, label: 'Jan 2' },
+				],
+			},
+		];
+
+		it( 'renders one legend item per series by default', () => {
+			renderWithTheme( {
+				showLegend: true,
+				chartId: 'legend-groups-default',
+				data: comparisonPair,
+			} );
+
+			expect( screen.getByText( 'Views' ) ).toBeInTheDocument();
+			expect( screen.getByText( 'Views — previous' ) ).toBeInTheDocument();
+		} );
+
+		it( 'collapses a group to one item when legend.collapseGroups is set', () => {
+			renderWithTheme( {
+				showLegend: true,
+				legend: { collapseGroups: true },
+				chartId: 'legend-groups-collapsed',
+				data: comparisonPair,
+			} );
+
+			expect( screen.getByText( 'Views' ) ).toBeInTheDocument();
+			expect( screen.queryByText( 'Views — previous' ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'toggles only the clicked series when interactive without collapseGroups', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'legend-groups-interactive',
+				data: comparisonPair,
+			} );
+
+			const buttons = screen.getAllByRole( 'button' );
+			await user.click( buttons[ 0 ] );
+
+			expect( buttons[ 0 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+			expect( buttons[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+		} );
+
+		it( 'toggles the whole group when interactive with collapseGroups', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true, collapseGroups: true },
+				chartId: 'legend-groups-interactive-collapsed',
+				data: comparisonPair,
+			} );
+
+			const buttons = screen.getAllByRole( 'button' );
+			expect( buttons ).toHaveLength( 1 );
+
+			await user.click( buttons[ 0 ] );
+
+			expect( buttons[ 0 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+			expect(
+				screen.getByText( /all series are hidden.*click legend items to show data/i )
+			).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'Interactive Legend — value axis', () => {
+		const twoSeries = [
+			{
+				label: 'Views',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 20, label: 'Jan 2' },
+				],
+				options: {},
+			},
+			{
+				label: 'Visitors',
+				data: [
+					{ date: new Date( '2024-01-01' ), value: 100, label: 'Jan 1' },
+					{ date: new Date( '2024-01-02' ), value: 200, label: 'Jan 2' },
+				],
+				options: {},
+			},
+		];
+		// Bare numbers inside the plot (scoped via the chart's application role, away from visx's
+		// off-screen text-measurement SVGs) are value-axis ticks: the series labels carry no digits
+		// and the empty-state message is text-only.
+		const numericTick = /^[\d,]+$/;
+
+		it( 'pins the value axis when rescaleYOnVisibilityChange is false', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				rescaleYOnVisibilityChange: false,
+				chartId: 'line-stable-axis',
+				data: twoSeries,
+			} );
+
+			const chart = screen.getByRole( 'application' );
+			const ticksBefore = within( chart )
+				.getAllByText( numericTick )
+				.map( el => el.textContent )
+				.sort();
+			expect( ticksBefore.length ).toBeGreaterThan( 0 );
+
+			// Hide the high-range Visitors series; with a pinned domain the axis keeps its ticks.
+			await user.click( screen.getAllByRole( 'button' )[ 1 ] );
+
+			const ticksAfter = within( chart )
+				.getAllByText( numericTick )
+				.map( el => el.textContent )
+				.sort();
+			expect( ticksAfter ).toEqual( ticksBefore );
+		} );
+
+		it( 'rescales the value axis by default when a series is toggled off', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'line-rescale-axis',
+				data: twoSeries,
+			} );
+
+			const chart = screen.getByRole( 'application' );
+			const ticksBefore = within( chart )
+				.getAllByText( numericTick )
+				.map( el => el.textContent )
+				.sort();
+			expect( ticksBefore.length ).toBeGreaterThan( 0 );
+
+			// Default preserves the pre-existing behaviour: hiding the high-range Visitors series
+			// lets the axis rescale to the remaining Views range, so its ticks change.
+			await user.click( screen.getAllByRole( 'button' )[ 1 ] );
+
+			const ticksAfter = within( chart )
+				.getAllByText( numericTick )
+				.map( el => el.textContent )
+				.sort();
+			expect( ticksAfter ).not.toEqual( ticksBefore );
+		} );
+
+		it( 'drops the axes when all series are hidden so they do not collapse', async () => {
+			const user = userEvent.setup();
+
+			renderWithTheme( {
+				showLegend: true,
+				legend: { interactive: true },
+				chartId: 'line-hidden-axes',
+				data: twoSeries,
+			} );
+
+			const chart = screen.getByRole( 'application' );
+			expect( within( chart ).getAllByText( numericTick ).length ).toBeGreaterThan( 0 );
+
+			const buttons = screen.getAllByRole( 'button' );
+			await user.click( buttons[ 0 ] );
+			await user.click( buttons[ 1 ] );
+
+			// With no visible data the value scale would collapse, so the axes are removed rather
+			// than rendered squished at the top — no tick labels remain.
+			expect( within( chart ).queryAllByText( numericTick ) ).toHaveLength( 0 );
+			expect(
+				screen.getByText( /all series are hidden.*click legend items to show data/i )
+			).toBeInTheDocument();
+		} );
+	} );
+
+	describe( 'defaultHiddenSeries', () => {
+		it( 'renders a series hidden when named in defaultHiddenSeries', () => {
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-default-hidden-line"
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			const items = screen.getAllByRole( 'button' );
+			expect( items[ 0 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+			expect( items[ 1 ] ).toHaveAttribute( 'aria-pressed', 'false' );
+		} );
+
+		it( 'lets the user reveal a series seeded hidden', async () => {
+			const user = userEvent.setup();
+
+			render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId="test-default-hidden-reveal-line"
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ [
+							{
+								label: 'Series A',
+								data: [ { date: new Date( '2024-01-01' ), value: 10, label: 'Jan 1' } ],
+								options: {},
+							},
+							{
+								label: 'Series B',
+								data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+								options: {},
+							},
+						] }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			await user.click( screen.getAllByRole( 'button' )[ 1 ] );
+
+			expect( screen.getAllByRole( 'button' )[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+		} );
+
+		it( 'keeps a revealed series visible after a data change', async () => {
+			// Matters specifically at chart level: useChartRegistration unregisters and
+			// re-registers whenever legendItems change, which a data prop change triggers.
+			// A hook-level harness has no registration at all, so it can't catch a
+			// regression where re-registration re-triggers the seeding effect.
+			const user = userEvent.setup();
+			const chartId = 'test-default-hidden-data-change-line';
+
+			const makeData = ( seriesAValue: number ) => [
+				{
+					label: 'Series A',
+					data: [ { date: new Date( '2024-01-01' ), value: seriesAValue, label: 'Jan 1' } ],
+					options: {},
+				},
+				{
+					label: 'Series B',
+					data: [ { date: new Date( '2024-01-01' ), value: 20, label: 'Jan 1' } ],
+					options: {},
+				},
+			];
+
+			const { rerender } = render(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId={ chartId }
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ makeData( 10 ) }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			await user.click( screen.getAllByRole( 'button' )[ 1 ] );
+			expect( screen.getAllByRole( 'button' )[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+
+			rerender(
+				<GlobalChartsProvider>
+					<LineChartUnresponsive
+						width={ 500 }
+						height={ 300 }
+						withGradientFill={ false }
+						showLegend={ true }
+						legend={ { interactive: true } }
+						chartId={ chartId }
+						defaultHiddenSeries={ [ 'Series B' ] }
+						data={ makeData( 30 ) }
+					/>
+				</GlobalChartsProvider>
+			);
+
+			expect( screen.getAllByRole( 'button' )[ 1 ] ).toHaveAttribute( 'aria-pressed', 'true' );
+		} );
+	} );
+} );

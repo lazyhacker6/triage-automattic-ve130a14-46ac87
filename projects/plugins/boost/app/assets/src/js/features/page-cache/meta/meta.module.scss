@@ -1,0 +1,96 @@
+.wrapper {
+	font-size: 14px;
+	line-height: 22px;
+
+	:global(button ~ button) {
+		margin-left: 20px !important;
+	}
+
+	.body {
+		margin-top: 16px;
+
+		.section {
+			padding: 16px;
+			border-radius: 4px;
+			background-color: var(--gray-0);
+
+			~ .section {
+				margin-top: 16px;
+			}
+
+			&.has-error {
+
+				textarea {
+					border-color: var(--red-40);
+				}
+
+				.error-message {
+					display: block;
+					color: var(--red-40);
+				}
+			}
+
+			.title {
+				margin-bottom: 16px;
+				font-size: 16px;
+				line-height: 1;
+				font-weight: 600;
+			}
+
+			textarea {
+				display: block;
+				margin-bottom: 8px;
+				width: 100%;
+				padding: 12px 16px;
+				border-radius: 4px;
+				border: 1px solid var(--gray-10);
+				background: var(--primary-white);
+				color: #000;
+			}
+
+			.error-message {
+				display: none;
+			}
+
+			.description {
+				margin-top: 8px;
+				font-size: 14px;
+				line-height: 1.5;
+				color: var(--gray-60);
+				font-weight: 400;
+			}
+
+			&[data-except-content] .description {
+				font-size: var(--wpds-typography-font-size-md);
+				line-height: var(--wpds-typography-line-height-sm);
+
+				// Same specificity as the `.has-error` rule above, so keep the error red.
+				&:not(.error-message) {
+					color: var(--wpds-color-foreground-content-neutral-weak);
+				}
+			}
+		}
+
+		.button {
+			margin-top: 16px;
+		}
+	}
+
+	.logging-toggle {
+		margin-right: 1em;
+		float: left;
+	}
+
+	.clearfix {
+		clear: both;
+	}
+}
+
+.tooltip:global(.icon-tooltip-container) :global(.components-popover__content) {
+	width: 150px;
+	color: var(--jp-black);
+}
+
+.example-trigger :global(.icon-tooltip-anchor) {
+	inset-inline-start: -10px;
+}

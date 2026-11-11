@@ -1,0 +1,106 @@
+/**
+ * External dependencies
+ */
+import { Icon } from '@jetpack-premium-analytics/externals';
+import { jetpack } from '@jetpack-premium-analytics/icons';
+import { useReportDateFilters } from '@jetpack-premium-analytics/routing';
+import { StatsBreadcrumbs } from '@jetpack-premium-analytics/ui';
+import {
+	ExporterCsvAction,
+	ReportPageLayout,
+	ReportErrorState,
+	ReportRecordsTable,
+	tagsCsvExporter,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { Page } from '@wordpress/admin-ui';
+import { useMemo } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import { route } from '../package.json';
+import reportPageStyles from '../page.module.scss';
+import { REPORTS } from '../registry';
+import { useReportParams } from '../use-report-params';
+import { getTagRowId, getTagsFields, useTagsReportRecords } from './config';
+import type { StatsTagsItem } from '@jetpack-premium-analytics/data';
+import type { JSX } from 'react';
+
+const ROUTE_FROM = route.path;
+
+/**
+ * Initial records-table view: views sort descending, the label column absorbs
+ * spare width, and the numeric column stays compact and right-aligned.
+ */
+const RECORDS_VIEW = {
+	sort: { field: 'views', direction: 'desc' as const },
+	layout: {
+		styles: {
+			label: { width: '100%' },
+			views: { align: 'end' as const },
+		},
+	},
+};
+
+/**
+ * Premium Analytics Tags & categories report page component.
+ *
+ * `stats/tags` returns one flat list ranked over the report window and reports no
+ * comparison, so this page has date filters and the records table, with no tabs or
+ * performance chart.
+ *
+ * @return The Tags & categories report page.
+ */
+function TagsReport(): JSX.Element {
+	const reportParams = useReportParams();
+	const records = useTagsReportRecords( reportParams );
+	const fields = useMemo( () => getTagsFields(), [] );
+	const dateFilters = useReportDateFilters( ROUTE_FROM );
+
+	const { getLabel } = REPORTS.tags;
+
+	return (
+		<Page
+			className={ reportPageStyles.page }
+			visual={ <Icon icon={ jetpack } /> }
+			breadcrumbs={ <StatsBreadcrumbs items={ [ { label: getLabel() } ] } /> }
+			actions={
+				<ExporterCsvAction
+					exporter={ tagsCsvExporter }
+					items={ records.rows }
+					status={ records }
+					reportParams={ reportParams }
+				/>
+			}
+		>
+			<ReportPageLayout title={ getLabel() } dateFilters={ dateFilters }>
+				<ReportErrorState
+					status={ records }
+					retryDescription={ __(
+						"We couldn't load tags and categories. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					) }
+				>
+					<ReportRecordsTable< StatsTagsItem >
+						data={ records.rows }
+						fields={ fields }
+						getItemId={ getTagRowId }
+						isLoading={ records.isLoading }
+						isFetching={ records.isFetching }
+						initialView={ RECORDS_VIEW }
+						searchLabel={ __( 'Search tags and categories', 'jetpack-premium-analytics-pkg' ) }
+					/>
+				</ReportErrorState>
+			</ReportPageLayout>
+		</Page>
+	);
+}
+
+/**
+ * Tags & categories report page (default export for the report registry).
+ *
+ * @return The Tags & categories report page.
+ */
+export default function TagsReportPage(): JSX.Element {
+	return <TagsReport />;
+}

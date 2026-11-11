@@ -1,0 +1,57 @@
+{
+	"name": "@automattic/jetpack-licensing",
+	"version": "1.3.5",
+	"private": true,
+	"description": "Jetpack licensing flow",
+	"homepage": "https://github.com/Automattic/jetpack/tree/HEAD/projects/js-packages/licensing/#readme",
+	"bugs": {
+		"url": "https://github.com/Automattic/jetpack/labels/[JS Package] Licensing"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Automattic/jetpack",
+		"directory": "projects/js-packages/licensing"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Automattic",
+	"type": "module",
+	"exports": {
+		".": "./index.jsx",
+		"./action-types": "./src/state/action-types",
+		"./state": "./src/state"
+	},
+	"scripts": {
+		"test": "jest",
+		"test-coverage": "pnpm run test --coverage",
+		"typecheck": "tsgo --noEmit"
+	},
+	"dependencies": {
+		"@automattic/jetpack-analytics": "workspace:*",
+		"@automattic/jetpack-api": "workspace:*",
+		"@automattic/jetpack-components": "workspace:*",
+		"@automattic/jetpack-connection": "workspace:*",
+		"@automattic/jetpack-script-data": "workspace:*",
+		"@wordpress/api-fetch": "8.1.0",
+		"@wordpress/components": "44.0.0",
+		"@wordpress/element": "10.1.0",
+		"@wordpress/i18n": "7.1.0",
+		"@wordpress/icons": "20.0.0",
+		"@wordpress/ui": "0.26.0",
+		"clsx": "2.1.1",
+		"prop-types": "15.8.1"
+	},
+	"devDependencies": {
+		"@automattic/jetpack-base-styles": "workspace:*",
+		"@automattic/jetpack-webpack-config": "workspace:*",
+		"@babel/core": "7.29.13",
+		"@testing-library/dom": "10.4.2",
+		"@testing-library/react": "16.3.3",
+		"@testing-library/user-event": "14.6.8",
+		"@types/react": "19.3.0",
+		"@typescript/native-preview": "7.0.0-dev.20260707.2",
+		"babel-jest": "30.5.2",
+		"jest": "30.5.2",
+		"react": "19.3.0",
+		"react-dom": "19.3.0"
+	}
+}

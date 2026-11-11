@@ -1,0 +1,218 @@
+/**
+ * Internal dependencies
+ */
+import { Navigate, useLocation } from 'react-router';
+import { assetUrl } from '../../assets/url';
+import { MyJetpackRoutes } from '../../constants';
+import useProduct from '../../data/products/use-product';
+import PricingInterstitial from './pricing-interstitial';
+import ProductInterstitial from './product-interstitial';
+
+const completeImage = assetUrl( 'components/product-interstitial/assets/complete.webp' );
+const extrasImage = assetUrl( 'components/product-interstitial/assets/extras.png' );
+const securityImage = assetUrl( 'components/product-interstitial/assets/security.webp' );
+const statsImage = assetUrl( 'components/product-interstitial/assets/stats.png' );
+
+// Export the main components
+export default ProductInterstitial;
+
+/**
+ * AntiSpamInterstitial component
+ *
+ * @return {object} AntiSpamInterstitial react component.
+ */
+export function AntiSpamInterstitial() {
+	return <PricingInterstitial slug="anti-spam" />;
+}
+
+/**
+ * BackupInterstitial component
+ *
+ * @return {object} BackupInterstitial react component.
+ */
+export function BackupInterstitial() {
+	return <PricingInterstitial slug="backup" />;
+}
+
+/**
+ * BoostInterstitial component
+ *
+ * @return {object} BoostInterstitial react component.
+ */
+export function BoostInterstitial() {
+	return <PricingInterstitial slug="boost" />;
+}
+
+/**
+ * CRMInterstitial component
+ *
+ * @return {object} CRMInterstitial react component.
+ */
+export function CRMInterstitial() {
+	return <PricingInterstitial slug="crm" />;
+}
+
+/**
+ * ExtrasInterstitial component
+ *
+ * @return {object} ExtrasInterstitial react component.
+ */
+export function ExtrasInterstitial() {
+	return (
+		<ProductInterstitial slug="extras" installsPlugin={ true }>
+			<img src={ extrasImage } alt="Extras" />
+		</ProductInterstitial>
+	);
+}
+
+/**
+ * JetpackAiInterstitial component
+ *
+ * @return {object} JetpackAiInterstitial react component.
+ */
+export function JetpackAiInterstitial() {
+	return <PricingInterstitial slug="jetpack-ai" />;
+}
+
+/**
+ * ProtectInterstitial component
+ *
+ * @return {object} ProtectInterstitial react component.
+ */
+export function ProtectInterstitial() {
+	return <PricingInterstitial slug="protect" />;
+}
+
+/**
+ * ScanInterstitial component
+ *
+ * @return {object} ScanInterstitial react component.
+ */
+export function ScanInterstitial() {
+	return <ProductInterstitial slug="scan" installsPlugin={ true } bundle="security" />;
+}
+
+/**
+ * SocialInterstitial component
+ *
+ * @return {object} SocialInterstitial react component.
+ */
+export function SocialInterstitial() {
+	return <PricingInterstitial slug="social" />;
+}
+
+/**
+ * SearchInterstitial component
+ *
+ * @return {object} SearchInterstitial react component.
+ */
+export function SearchInterstitial() {
+	return <PricingInterstitial slug="search" />;
+}
+
+/**
+ * StatsInterstitial component
+ *
+ * @return {object} StatsInterstitial react component.
+ */
+export function StatsInterstitial() {
+	return <PricingInterstitial slug="stats" />;
+}
+
+/**
+ * VideoPressInterstitial component
+ *
+ * @return {object} VideoPressInterstitial react component.
+ */
+export function VideoPressInterstitial() {
+	return <PricingInterstitial slug="videopress" />;
+}
+
+/**
+ * Redirect a retired bundle's purchase page without moving existing subscribers.
+ *
+ * @param {object}                    props          - Component props.
+ * @param {string}                    props.slug     - Bundle slug.
+ * @param {import('react').ReactNode} props.children - Bundle illustration.
+ * @return {object} Purchase page or replacement route.
+ */
+function LegacyBundleInterstitial( { slug, children } ) {
+	const { detail, isLoading } = useProduct( slug );
+	const { search } = useLocation();
+	const replacement = detail?.purchaseReplacement?.slug;
+	if (
+		! isLoading &&
+		detail?.pricingForUi?.available === false &&
+		! detail?.hasPaidPlanForProduct &&
+		replacement
+	) {
+		return <Navigate to={ { pathname: `/add-${ replacement }`, search } } replace />;
+	}
+	return (
+		<ProductInterstitial slug={ slug } installsPlugin={ true }>
+			{ children }
+		</ProductInterstitial>
+	);
+}
+
+/**
+ * SecurityInterstitial component
+ *
+ * @return {object} SecurityInterstitial react component.
+ */
+export function SecurityInterstitial() {
+	return (
+		<LegacyBundleInterstitial slug="security">
+			<img src={ securityImage } alt="Security" />
+		</LegacyBundleInterstitial>
+	);
+}
+
+/**
+ * GrowthInterstitial component
+ *
+ * @return {object} GrowthInterstitial react component.
+ */
+export function GrowthInterstitial() {
+	return (
+		<LegacyBundleInterstitial slug="growth">
+			<img src={ statsImage } alt="Growth" />
+		</LegacyBundleInterstitial>
+	);
+}
+
+/**
+ * CompleteInterstitial component
+ *
+ * @return {object} CompleteInterstitial react component.
+ */
+export function CompleteInterstitial() {
+	return (
+		<ProductInterstitial slug="complete" installsPlugin={ true }>
+			<img src={ completeImage } alt="Complete" />
+		</ProductInterstitial>
+	);
+}
+
+/**
+ * Render the Pro bundle purchase page.
+ *
+ * @return {object} Pro purchase page.
+ */
+export function ProInterstitial() {
+	const { detail, isLoading, isRefetching } = useProduct( 'pro' );
+	const canShowPro =
+		detail?.hasPaidPlanForProduct ||
+		detail?.pricingForUi?.catalogAvailable === true ||
+		detail?.pricingForUi?.available === true;
+	if ( ! isLoading && ! isRefetching && ! canShowPro ) {
+		return <Navigate to={ MyJetpackRoutes.Home } replace />;
+	}
+	return (
+		<div hidden={ ! canShowPro }>
+			<ProductInterstitial slug="pro" installsPlugin={ true }>
+				<img src={ completeImage } alt="" />
+			</ProductInterstitial>
+		</div>
+	);
+}

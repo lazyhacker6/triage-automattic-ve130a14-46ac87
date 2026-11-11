@@ -1,0 +1,12 @@
+@use "@wordpress/base-styles/breakpoints";
+
+.jetpack-form-hidden-field-inputs {
+	text-wrap: pretty;
+}
+
+@media (max-width: #{ (breakpoints.$break-mobile) }) {
+
+	.jetpack-form-hidden-field-inputs {
+		flex-wrap: wrap;
+	}
+}

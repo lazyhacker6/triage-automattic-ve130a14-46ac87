@@ -1,0 +1,52 @@
+.jpb-backup-detail {
+	border-radius: var(--wpds-border-radius-xl);
+
+	&__header {
+		padding-block: var(--wpds-dimension-padding-2xl);
+		// Card.Header doesn't ship its own separator; add one so the
+		// header row and the body content read as distinct sections.
+		border-block-end: var(--wpds-border-width-xs) solid var(--wpds-color-stroke-surface-neutral);
+
+		@media (min-width: 600px) {
+			padding-inline: var(--wpds-dimension-padding-3xl) var(--wpds-dimension-padding-2xl);
+		}
+	}
+
+	// Allow the title group and the action group to drop onto separate
+	// rows when the card is too narrow to fit them side-by-side
+	// (notably on stacked / mobile layouts). Without this the inner
+	// Stack stays nowrap, each link wraps mid-label, and the row
+	// collapses into an unreadable squeeze.
+	&__header-row {
+		flex-wrap: wrap;
+		row-gap: var(--wpds-dimension-gap-sm);
+	}
+
+	// Keep the title pinned to its icon and let the heading shrink with
+	// the row rather than forcing the parent to overflow.
+	&__header-title {
+		min-width: 0;
+		flex: 1 1 auto;
+	}
+
+	// Keep each action label on a single line so it stays legible when
+	// the action group wraps onto its own row. flex-wrap lets the two
+	// links drop to a second sub-row if the viewport is too narrow even
+	// for them side-by-side (deep mobile / zoomed-in widths).
+	&__header-actions {
+		flex-wrap: wrap;
+		flex-shrink: 1;
+		max-inline-size: 100%;
+	}
+
+	// Card drops the top padding after a header; the separator needs it back.
+	&__body {
+		padding-block-start: var(--wpds-dimension-padding-2xl);
+	}
+
+	&__by {
+		display: flex;
+		flex-wrap: wrap;
+		column-gap: var(--wpds-dimension-gap-lg);
+	}
+}

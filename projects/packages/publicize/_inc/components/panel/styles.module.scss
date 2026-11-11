@@ -1,0 +1,10 @@
+@use "@wordpress/base-styles/colors";
+
+.panel {
+	position: relative;
+}
+
+.description:global(.components-text) {
+	color: colors.$gray-700;
+	font-size: 0.75rem;
+}

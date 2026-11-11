@@ -1,0 +1,45 @@
+import { Path, SVG } from '@wordpress/components';
+import type { ReactElement } from 'react';
+
+/**
+ * Automattic Icon Logo component
+ *
+ * The Automattic logo is black or white only: pass white for both colors on dark backgrounds.
+ *
+ * @param {object} props            - Component props
+ * @param {string} props.innerColor - Color code for the logo's ring.
+ * @param {string} props.outerColor - Color code for the slash inside the ring.
+ * @return {ReactElement} Component template
+ */
+export default function AutomatticIconLogo( {
+	innerColor = '#000000',
+	outerColor = '#000000',
+}: {
+	innerColor: string;
+	outerColor: string;
+} ): ReactElement {
+	return (
+		<SVG
+			clipRule="evenodd"
+			fill="none"
+			fillRule="evenodd"
+			height="43"
+			viewBox="0 0 171 156"
+			width="47"
+			xmlns="http://www.w3.org/2000/svg"
+		>
+			<Path
+				fillRule="evenodd"
+				clipRule="evenodd"
+				d="M85.398 155.632C34.1992 155.632 1.01562 118.788 1.01562 80.3993V75.6007C1.01562 36.5611 34.1992 0.368164 85.398 0.368164C136.597 0.368164 169.984 36.5611 169.984 75.6007V80.3993C169.984 118.666 136.8 155.632 85.398 155.632ZM145.191 76.048C145.191 48.0696 122.323 23.1819 85.398 23.1819C48.4731 23.1819 25.9304 48.1103 25.9304 76.048V79.5047C25.9304 107.483 48.7984 132.859 85.398 132.859C121.998 132.859 145.191 107.483 145.191 79.5047V76.048Z"
+				fill={ innerColor }
+			/>
+			<Path
+				fillRule="evenodd"
+				clipRule="evenodd"
+				d="M62.7978 91.4965L87.6364 53.0284C91.1593 47.5724 98.4381 46.0054 103.894 49.5283L103.928 49.5504C109.384 53.0732 110.951 60.352 107.428 65.808L82.5899 104.276C79.067 109.732 71.7882 111.299 66.3322 107.776L66.298 107.754C60.842 104.231 59.275 96.9525 62.7978 91.4965Z"
+				fill={ outerColor }
+			/>
+		</SVG>
+	);
+}

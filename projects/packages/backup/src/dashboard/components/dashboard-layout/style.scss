@@ -1,0 +1,33 @@
+// The body is the scrollable middle slot: it spans the full width of
+// the Page content area so the scrollbar lines up with the right edge
+// of the page (matching VideoPress / Forms). The inner wrapper holds
+// the centering + padding so screen content keeps to the dashboard's
+// 1344px ribbon without dragging the scrollbar inward.
+.jpb-dashboard-body {
+	box-sizing: border-box;
+	width: 100%;
+
+	&__inner {
+		box-sizing: border-box;
+		width: 100%;
+		max-width: 1344px;
+		margin-inline: auto;
+		padding: 24px;
+	}
+}
+
+// The body already pads the top, so drop the slot's own leading margin
+// and keep the gap above the card the same as on every other dashboard.
+.jpb-dashboard-body__inner > .jp-jitm-slot .jitm-card {
+	margin-block-start: 0;
+}
+
+// `Notice.Root` has no margin of its own: match the banners' gap,
+// and take no space when there is no error.
+.jpb-connection-error {
+	margin-block-end: 16px;
+
+	&:empty {
+		display: none;
+	}
+}

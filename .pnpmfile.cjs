@@ -1,0 +1,420 @@
+// CI hack. If you want to run tests against React 18 locally, you could set it to 18 and then run `pnpm dedupe` (just don't commit that change, or the resulting lockfile changes).
+const withReactVersion = undefined;
+
+/**
+ * Fix package dependencies.
+ *
+ * We could generally do the same with pnpm.overrides in packages.json, but this allows for comments.
+ *
+ * @param {object} pkg - Dependency package.json contents.
+ * @return {object} Modified pkg.
+ */
+async function fixDeps( pkg ) {
+	// Deps tend to get outdated due to a slow release cycle.
+	// So change `^` to `>=` to avoid many duplicate packages (most are dependency-extracted in the build anyway), and hope any breaking changes will not really break.
+	if (
+		pkg.name === '@automattic/i18n-utils' ||
+		pkg.name === '@automattic/launchpad' ||
+		pkg.name === '@automattic/site-launch-modals'
+	) {
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			if ( dep.startsWith( '@wordpress/' ) ) {
+				if ( ver.startsWith( '^' ) ) {
+					pkg.dependencies[ dep ] = '>=' + ver.substring( 1 );
+				} else if ( ver.match( /^\d/ ) ) {
+					pkg.dependencies[ dep ] = '>=' + ver;
+				}
+			}
+		}
+	}
+
+	// Let's try just using the monorepo version.
+	if ( pkg.name === '@automattic/launchpad' && pkg.dependencies?.[ 'social-logos' ] ) {
+		pkg.dependencies[ 'social-logos' ] = 'workspace:*';
+	}
+
+	// lock()/unlock() pair through a module-scoped registry, so a prerelease
+	// private-apis range would resolve a second copy beside the stable one the
+	// repo pins and throw. Collapse it onto the version premium-analytics
+	// declares; the rule stops matching once no manifest asks for a prerelease.
+	if ( pkg.dependencies?.[ '@wordpress/private-apis' ]?.includes( '-next' ) ) {
+		pkg.dependencies[ '@wordpress/private-apis' ] =
+			require( './projects/packages/premium-analytics/package.json' ).dependencies[
+				'@wordpress/private-apis'
+			];
+	}
+
+	// WooCommerce packages pin `@wordpress/*` deps to versions from the lowest Core version the plugin supports.
+	// Change to `>=` to avoid many duplicate packages (most are dependency-extracted in the build anyway), and hope any breaking changes will not really break.
+	if ( pkg.name === '@woocommerce/email-editor' ) {
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			if ( dep.startsWith( '@wordpress/' ) ) {
+				if ( ver.startsWith( '^' ) ) {
+					pkg.dependencies[ dep ] = '>=' + ver.substring( 1 );
+				} else if ( ver.match( /^\d/ ) ) {
+					pkg.dependencies[ dep ] = '>=' + ver;
+				}
+			}
+		}
+	}
+
+	// Turn @wordpress/eslint-plugin's eslint plugin deps into peer deps.
+	// https://github.com/WordPress/gutenberg/issues/39810
+	if ( pkg.name === '@wordpress/eslint-plugin' ) {
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			if (
+				dep.startsWith( 'eslint-plugin-' ) ||
+				dep.endsWith( '/eslint-plugin' ) ||
+				dep.startsWith( 'eslint-config-' ) ||
+				dep.endsWith( '/eslint-config' ) ||
+				dep.startsWith( '@typescript-eslint/' ) ||
+				dep === '@wordpress/theme'
+			) {
+				delete pkg.dependencies[ dep ];
+				pkg.peerDependencies[ dep ] = ver.replace( /^\^?/, '>=' );
+			}
+		}
+	}
+
+	// Turn `@wordpress/stylelint-config` deps into peer deps too.
+	if ( pkg.name === '@wordpress/stylelint-config' ) {
+		for ( const [ dep, ver ] of Object.entries( pkg.peerDependencies ) ) {
+			if ( ! ver.startsWith( '>' ) ) {
+				pkg.peerDependencies[ dep ] = ver.replace( /^\^?/, '>=' );
+			}
+		}
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			delete pkg.dependencies[ dep ];
+			pkg.peerDependencies[ dep ] = ver.startsWith( '>' ) ? ver : ver.replace( /^\^?/, '>=' );
+		}
+	}
+
+	// Outdated dependencies
+	if ( pkg.name === '@wordpress/build' ) {
+		if ( pkg.dependencies.cssnano === '^6.0.1' ) {
+			pkg.dependencies.cssnano = '^6 || ^7';
+		}
+		if ( pkg.dependencies.esbuild === '^0.27.2' ) {
+			pkg.dependencies.esbuild = '^0.27 || ^0.28';
+		}
+	}
+
+	// Update localtunnel axios dep to avoid CVE
+	// https://github.com/localtunnel/localtunnel/issues/632
+	if ( pkg.name === 'localtunnel' && pkg.dependencies.axios === '0.21.4' ) {
+		pkg.dependencies.axios = '^1.6.0';
+	}
+
+	// Avoid annoying flip-flopping of sub-dep peer deps.
+	// https://github.com/localtunnel/localtunnel/issues/481
+	if ( pkg.name === 'localtunnel' ) {
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			if ( ver.match( /^\d+(\.\d+)+$/ ) ) {
+				pkg.dependencies[ dep ] = '^' + ver;
+			}
+		}
+	}
+
+	// Update to avoid periodic CVEs. Upstream pins deps for "security" but doesn't respond all that quickly to new issues.
+	// https://github.com/open-cli-tools/concurrently/issues/598#issuecomment-4842564626
+	if ( pkg.name === 'concurrently' ) {
+		for ( const [ dep, ver ] of Object.entries( pkg.dependencies ) ) {
+			if ( ver.match( /^\d+(\.\d+)+$/ ) ) {
+				pkg.dependencies[ dep ] = '^' + ver;
+			}
+		}
+	}
+
+	// Apparently this package tried to switch from a dep to a peer dep, but screwed it up.
+	// https://github.com/ajv-validator/ajv-formats/issues/80
+	if ( pkg.name === 'ajv-formats' && pkg.dependencies?.ajv && pkg.peerDependencies?.ajv ) {
+		delete pkg.dependencies.ajv;
+		delete pkg.peerDependenciesMeta?.ajv;
+	}
+
+	// Types packages have outdated deps. Reset all their `@wordpress/*` deps to star-version,
+	// which pnpm should 🤞 dedupe to match whatever is in use elsewhere in the monorepo.
+	// https://github.com/Automattic/jetpack/pull/35904#discussion_r1508681777
+	// Currently @types/wordpress__block-editor is the only one still in use; see also https://github.com/WordPress/gutenberg/issues/67691
+	if ( pkg.name.startsWith( '@types/wordpress__' ) && pkg.dependencies ) {
+		for ( const k of Object.keys( pkg.dependencies ) ) {
+			if ( k.startsWith( '@wordpress/' ) || k === '@types/react' ) {
+				pkg.dependencies[ k ] = '*';
+			}
+		}
+	}
+
+	// Outdated, vulnerable dep. Seems to work with the updated version.
+	// https://github.com/istanbuljs/load-nyc-config/issues/26
+	if (
+		pkg.name === '@istanbuljs/load-nyc-config' &&
+		pkg.dependencies?.[ 'js-yaml' ] === '^3.13.1'
+	) {
+		pkg.dependencies[ 'js-yaml' ] = '^4.2.0';
+	}
+
+	// A one-off script (`projects/packages/jetpack-mu-wpcom/bin/sync-newspack-blocks.sh`) runs `jscodeshift`, which relies on
+	// outdated dependencies that fails our trust policy. Specifically, `jscodeshift` → `@babel/register` → really old `make-dir` v2 (to still support node <10.12) → `semver` v5.
+	if ( pkg.name === 'make-dir' && pkg.dependencies?.semver === '^5.6.0' ) {
+		pkg.dependencies.semver = '^7.7.3';
+	}
+
+	// Outdated dep with a deprecated sub-dep.
+	// https://github.com/istanbuljs/babel-plugin-istanbul/issues/337
+	if ( pkg.name === 'babel-plugin-istanbul' && pkg.dependencies[ 'test-exclude' ] === '^7.0.1' ) {
+		pkg.dependencies[ 'test-exclude' ] = '^8.0.0';
+	}
+
+	// Clear GHSA-3g3m-2fjr-6pw4 for various deps. Historically the process has taken a while.
+	// https://github.com/istanbuljs/test-exclude/issues/78
+	// https://github.com/jestjs/jest/issues/16529
+	// https://github.com/joshwooding/vite-plugin-react-docgen-typescript/issues/92
+	// (plus a few more upstreams with no report yet)
+	if ( pkg.dependencies?.glob?.startsWith( '^13' ) ) {
+		pkg.dependencies.glob += ' || ^14';
+	}
+
+	// Clear GHSA-g3hv-75wg-m249 for various deps. Historically the process has taken a while.
+	// https://github.com/eslint/eslint/issues/21463
+	// https://github.com/istanbuljs/test-exclude/issues/78
+	// https://github.com/typescript-eslint/typescript-eslint/issues/13125
+	if ( pkg.dependencies?.minimatch?.startsWith( '^10' ) ) {
+		pkg.dependencies.minimatch += ' || ^11';
+	}
+
+	// We don't use this in our E2E runs, and it brings in a lot of extraneous deps (and CVE-2026-54285).
+	// (if you bring this back, do it by reverting the pnpmfile changes in commit e90548654eacfa7493388331dd644a6f927d16c5, don't just delete this bit).
+	if ( pkg.name === '@wordpress/e2e-test-utils-playwright' ) {
+		pkg.dependencies.lighthouse = 'workspace:@automattic/_jetpack-no-lighthouse@*';
+	}
+
+	return pkg;
+}
+
+/**
+ * Fix package peer dependencies.
+ *
+ * This can't be done with pnpm.overrides.
+ *
+ * @param {object} pkg - Dependency package.json contents.
+ * @return {object} Modified pkg.
+ */
+function fixPeerDeps( pkg ) {
+	// Deps that still depend on React <19.
+	const reactOldPkgs = new Set( [
+		// Still on 18.
+		'@woocommerce/email-editor', // direct dep from plugins/jetpack
+	] );
+	if ( reactOldPkgs.has( pkg.name ) ) {
+		for ( const p of [ 'react', 'react-dom' ] ) {
+			if ( ! pkg.peerDependencies?.[ p ] ) {
+				continue;
+			}
+
+			if (
+				pkg.peerDependencies[ p ].match( /(?:^|\|\|\s*)(?:\^18|18(?:\.\d+)?\.x)/ ) &&
+				! pkg.peerDependencies[ p ].match( /(?:^|\|\|\s*)(?:\^19|19(?:\.\d+)?\.x)/ )
+			) {
+				pkg.peerDependencies[ p ] += ' || ^19';
+			}
+		}
+	}
+
+	// Outdated eslint deps.
+	const eslintOldPkgs = new Set( [
+		'eslint-plugin-import', // https://github.com/import-js/eslint-plugin-import/issues/3227
+		'eslint-plugin-jsx-a11y', // https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/issues/1075
+		'eslint-plugin-react', // https://github.com/jsx-eslint/eslint-plugin-react/issues/3977
+	] );
+	if ( eslintOldPkgs.has( pkg.name ) ) {
+		for ( const p of [ 'eslint' ] ) {
+			if ( ! pkg.peerDependencies?.[ p ] ) {
+				continue;
+			}
+
+			if (
+				pkg.peerDependencies[ p ].match( /(?:^|\|\|\s*)(?:\^9|9\.x)/ ) &&
+				! pkg.peerDependencies[ p ].match( /(?:^|\|\|\s*)(?:\^10|10\.x)/ )
+			) {
+				pkg.peerDependencies[ p ] += ' || ^10';
+			}
+		}
+	}
+
+	// @wordpress/theme includes plugins for various tools. Widen peer dependencies so it doesn't conflict.
+	// @see https://github.com/WordPress/gutenberg/pull/80267 for example
+	if ( pkg.name === '@wordpress/theme' ) {
+		for ( const dep of [ 'esbuild', 'postcss', 'stylelint', 'vite' ] ) {
+			if ( pkg.peerDependencies[ dep ] && ! pkg.peerDependencies[ dep ].startsWith( '>' ) ) {
+				pkg.peerDependencies[ dep ] = pkg.peerDependencies[ dep ].replace( /^\^?/, '>=' );
+			}
+		}
+	}
+
+	// Bump problematic ranges for now; should be safe:
+	// p1792520152276519-slack-C05Q5HSS013
+	if (
+		pkg.name === '@wordpress/build' &&
+		pkg.peerDependencies?.[ '@wordpress/theme' ] === '>=0.8.0 <3.0.0'
+	) {
+		pkg.peerDependencies[ '@wordpress/theme' ] = '>=0.8.0 <=3.0.0';
+	}
+	if (
+		pkg.name === '@automattic/launchpad' &&
+		pkg.peerDependencies?.[ '@wordpress/i18n' ] === '^6.21.0'
+	) {
+		pkg.peerDependencies[ '@wordpress/i18n' ] += ' || ^7.0.0';
+	}
+	if (
+		pkg.name === 'newspack-icons' &&
+		pkg.peerDependencies?.[ '@wordpress/primitives' ] === '^3.0.0 || ^4.0.0'
+	) {
+		pkg.peerDependencies[ '@wordpress/primitives' ] += ' || ^5.0.0';
+	}
+
+	// We use this under tsdown (Rolldown), not Rollup. The `rollup` peer is only used for one TypeScript type, and it being missing apparently makes no difference in our usage.
+	// @see https://github.com/mjeanroy/rollup-plugin-license/issues/2110
+	if ( pkg.name === 'rollup-plugin-license' ) {
+		pkg.peerDependenciesMeta ??= {};
+		pkg.peerDependenciesMeta.rollup = { optional: true };
+	}
+
+	// It assumes hoisting to find its plugins. Sigh. Add peer deps for the plugins we use.
+	// https://github.com/ai/size-limit/issues/366
+	if ( pkg.name === 'size-limit' ) {
+		pkg.peerDependencies ??= {};
+		pkg.peerDependencies[ '@size-limit/file' ] = '*';
+		pkg.peerDependenciesMeta ??= {};
+		pkg.peerDependenciesMeta[ '@size-limit/file' ] = { optional: true };
+	}
+
+	// Outdated dependency because Calypso is still on node 22.
+	if (
+		pkg.name === '@automattic/calypso-config' &&
+		! pkg.dependencies?.[ '@types/node' ]?.includes( '^24.' )
+	) {
+		pkg.dependencies[ '@types/node' ] += ' || ^24.0.0';
+	}
+
+	// Should be an optional peer dep, but isn't.
+	// Since it already has a (non-optional 🙄) peer dep on sass-embedded, we can just delete the sass dep.
+	if ( pkg.name === 'esbuild-sass-plugin' && pkg.dependencies.sass ) {
+		delete pkg.dependencies.sass;
+	}
+
+	// Having copies with and without the peer dep tends to break tests. So let's just make it non-optional.
+	if ( pkg.name === '@wordpress/data' ) {
+		delete pkg.peerDependenciesMeta?.[ '@types/react' ];
+	}
+
+	return pkg;
+}
+
+/**
+ * Pnpm package hook.
+ *
+ * @see https://pnpm.io/pnpmfile#hooksreadpackagepkg-context-pkg--promisepkg
+ * @param {object} pkg     - Dependency package.json contents.
+ * @param {object} context - Pnpm object of some sort.
+ * @return {object} Modified pkg.
+ */
+async function readPackage( pkg, context ) {
+	if ( pkg.name ) {
+		pkg = await fixDeps( pkg, context );
+		pkg = fixPeerDeps( pkg, context );
+
+		// CI hack.
+		if ( withReactVersion ) {
+			for ( const field of [
+				'dependencies',
+				'devDependencies',
+				'optionalDependencies',
+				'peerDependencies',
+			] ) {
+				for ( const dep of [ 'react', 'react-dom' ] ) {
+					if ( pkg[ field ]?.[ dep ] ) {
+						pkg[ field ][ dep ] = '^' + withReactVersion;
+					}
+				}
+			}
+		}
+	}
+	return pkg;
+}
+
+/**
+ * Pnpm lockfile hook.
+ *
+ * @see https://pnpm.io/pnpmfile#hooksafterallresolvedlockfile-context-lockfile--promiselockfile
+ * @param {object} lockfile - Lockfile data.
+ * @return {object} Modified lockfile.
+ */
+function afterAllResolved( lockfile ) {
+	// If there's only one "importer", it's probably pnpx rather than the monorepo. Don't interfere.
+	if ( Object.keys( lockfile.importers ).length === 1 ) {
+		return lockfile;
+	}
+
+	for ( const [ k, v ] of Object.entries( lockfile.packages ) ) {
+		// Forbid `@wordpress/scripts`. Brings in too many different versions of deps, like (as of March 2025) eslint 8 when we've already updated to eslint 9.
+		if ( k.startsWith( '@wordpress/scripts@' ) ) {
+			throw new Error(
+				"Please don't bring in `@wordpress/scripts`. It brings in different versions of a lot of dependencies, and we generally have our own way to do the things that it tries to do.\nFor example, instead of `wp-scripts build`, run `webpack` directly with a config based on our monorepo-internal `@automattic/jetpack-webpack-config` package."
+			);
+		}
+
+		// We want `@wordpress/i18n`, not `i18n-calypso`.
+		if ( k.startsWith( 'i18n-calypso@' ) ) {
+			throw new Error(
+				"Please don't bring in `i18n-calypso`. We use `@wordpress/i18n` for GlotPress compatibility."
+			);
+		}
+
+		// Encourage `sass-embedded` over `sass`. Supposed to be faster, and it would be easy for `sass` to leak in.
+		if ( k.startsWith( 'sass@' ) || k.startsWith( 'node-sass@' ) ) {
+			throw new Error(
+				// prettier-ignore
+				`Please use \`sass-embedded\` rather than \`${ k.replace( /@.*/, '' ) }\`. We've standardized on the former.`
+			);
+		}
+
+		// We want to use `@jest/environment-jsdom-abstract` instead to allow for using newer `jsdom`.
+		if ( k.startsWith( 'jest-environment-jsdom@' ) ) {
+			throw new Error(
+				// prettier-ignore
+				`You don't need \`jest-environment-jsdom\`. Our base config in \`tools/js-tools/jest/config.base.js\` already sets up a JSDOM environment from \`tools/js-tools/jest/fix-environment-jsdom.mjs\`, use that instead. pdWQjU-1vl-p2`
+			);
+		}
+
+		// Now that we've moved to React 19, prevent React 18 from being re-installed.
+		if (
+			! withReactVersion &&
+			( k.startsWith( 'react@18.' ) ||
+				k.startsWith( 'react-dom@18.' ) ||
+				k.startsWith( '@types/react@18.' ) ||
+				k.startsWith( '@types/react-dom@18.' ) )
+		) {
+			throw new Error(
+				// prettier-ignore
+				`We've moved to React 19. Something you've done has tried to install \`${ k }\`, which would be likely to cause problems.`
+			);
+		}
+
+		// Forbid installing webpack without webpack-cli. It results in lots of spurious lockfile changes.
+		// https://github.com/pnpm/pnpm/issues/3935
+		if ( k.startsWith( 'webpack@' ) && ! v.optionalDependencies?.[ 'webpack-cli' ] ) {
+			throw new Error(
+				"Something you've done is trying to add a dependency on webpack without webpack-cli.\nThis is not allowed, as it tends to result in pnpm lockfile flip-flopping.\nSee https://github.com/pnpm/pnpm/issues/3935 for the upstream bug report.\n"
+			);
+		}
+	}
+
+	return lockfile;
+}
+
+module.exports = {
+	hooks: {
+		readPackage,
+		afterAllResolved,
+	},
+};

@@ -1,0 +1,105 @@
+<?php
+/**
+ * Main plugin file testing.
+ *
+ * @package automattic/paypal-payment-buttons
+ */
+
+use WorDBless\BaseTestCase;
+use WorDBless\Options as WorDBless_Options;
+use WorDBless\Users as WorDBless_Users;
+
+/**
+ * Main plugin file testing.
+ */
+class PayPal_Payment_Buttons_Test extends BaseTestCase {
+
+	/**
+	 * The current user id.
+	 *
+	 * @var int
+	 */
+	private static $user_id;
+
+	/**
+	 * The PayPal Payment Buttons object.
+	 *
+	 * @var \PayPal_Payment_Buttons
+	 */
+	public $paypal_plugin;
+
+	/**
+	 * Initialize tests
+	 */
+	public function set_up() {
+		$this->paypal_plugin = PayPal_Payment_Buttons::instance();
+	}
+
+	/**
+	 * Returning the environment into its initial state.
+	 */
+	public function tear_down() {
+		WorDBless_Options::init()->clear_options();
+		WorDBless_Users::init()->clear_all_users();
+		wp_deregister_script( 'jp-paypal-payments-ncps-blocks' );
+
+		unset( $_SERVER['REQUEST_METHOD'], $GLOBALS['current_screen'] );
+		$_GET = array();
+	}
+
+	/**
+	 * Creates a mock user and logs in
+	 */
+	public function create_user_and_login() {
+		self::$user_id = wp_insert_user(
+			array(
+				'user_login' => 'test_admin',
+				'user_pass'  => '123',
+				'role'       => 'administrator',
+			)
+		);
+		wp_set_current_user( self::$user_id );
+	}
+
+	/**
+	 * Triggers the actions to mimic activating the plugin.
+	 *
+	 * @param string $plugin The plugin slug to activate.
+	 */
+	public function activate_plugin( $plugin ) {
+		do_action( 'activate_' . $plugin );
+	}
+
+	/**
+	 * Tests PayPal Payment Buttons construction.
+	 *
+	 * Tests that the class can be instantiated successfully.
+	 */
+	public function test_plugin_construction() {
+		$plugin = PayPal_Payment_Buttons::instance();
+		$this->assertInstanceOf( 'PayPal_Payment_Buttons', $plugin );
+	}
+
+	/**
+	 * Verify that Jest exercises the script emitted by WordPress.
+	 */
+	public function test_block_availability_data_matches_the_executable_fixture() {
+		$handle = 'jp-paypal-payments-ncps-blocks';
+		set_current_screen( 'post' );
+		get_current_screen()->is_block_editor( true );
+		wp_register_script( $handle, 'https://example.org/editor.js', array(), '1.0', true );
+
+		$this->paypal_plugin->enqueue_block_availability_data();
+
+		$before = implode( "\n", array_filter( (array) wp_scripts()->get_data( $handle, 'before' ) ) );
+		$this->assertEmpty( wp_scripts()->get_data( $handle, 'data' ) );
+		$prefix = trim( file_get_contents( __DIR__ . '/../fixtures/editor-initial-state.js.txt' ) ) . '( ';
+		$this->assertStringStartsWith( $prefix, $before );
+		$this->assertStringEndsWith( ' );', $before );
+
+		$data = json_decode( substr( $before, strlen( $prefix ), -3 ), true );
+		$this->assertIsArray( $data );
+		$this->assertSame( array( 'available' => true ), $data['available_blocks']['paypal-payment-buttons'] );
+		$this->assertIsArray( $data['feature_flags'] );
+	}
+}

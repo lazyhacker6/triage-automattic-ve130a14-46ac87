@@ -1,0 +1,196 @@
+import { jest } from '@jest/globals';
+import { render, screen } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
+import JetpackFooter from '../index.tsx';
+
+describe( 'JetpackFooter', () => {
+	const className = 'sample-classname';
+
+	beforeEach( () => {
+		window.JetpackScriptData = {
+			site: {},
+			myJetpack: { isAvailable: true },
+			user: { current_user: { capabilities: { manage_options: true } } },
+		} as unknown as typeof window.JetpackScriptData;
+	} );
+
+	afterEach( () => {
+		delete window.JetpackNetworkAdminData;
+		delete window.JetpackScriptData;
+	} );
+
+	describe( 'Render the component', () => {
+		const menu = [
+			{
+				label: 'Link',
+				href: '/',
+			},
+			{
+				label: 'Button link',
+				onClick: () => {},
+			},
+		];
+
+		it( 'should include a footer tag', () => {
+			render( <JetpackFooter /> );
+
+			const element = screen.getByRole( 'contentinfo', { name: 'Jetpack' } );
+
+			expect( element ).toBeInTheDocument();
+		} );
+
+		it( 'should apply the class name', () => {
+			render( <JetpackFooter className={ className } /> );
+
+			const element = screen.getByRole( 'contentinfo' );
+
+			expect( element ).toHaveClass( className );
+		} );
+
+		it( 'should render the Jetpack logo', () => {
+			render( <JetpackFooter /> );
+
+			const element = screen.getByLabelText( 'Jetpack' );
+
+			expect( element ).toBeInTheDocument();
+		} );
+
+		it( 'should render Jetpack as regular text', () => {
+			render( <JetpackFooter /> );
+
+			const element = screen.getByText( 'Jetpack' );
+
+			expect( element ).toBeInTheDocument();
+			expect( element ).not.toBeInstanceOf( HTMLAnchorElement );
+		} );
+
+		it( 'should render the Automattic logo', () => {
+			render( <JetpackFooter /> );
+
+			const element = screen.getByText( 'An Automattic Airline', {
+				selector: '#jp-automattic-byline-logo-title',
+			} );
+
+			expect( element ).toBeInTheDocument();
+		} );
+
+		it( 'should render the links', () => {
+			render( <JetpackFooter menu={ menu } /> );
+
+			const link = screen.getByRole( 'link', { name: menu[ 0 ].label } );
+			const button = screen.getByRole( 'button', { name: menu[ 1 ].label } );
+
+			expect( link ).toBeInTheDocument();
+			expect( button ).toBeInTheDocument();
+			expect( button ).toHaveAttribute( 'tabindex', '0' );
+		} );
+
+		it( 'should hide default links when JetpackNetworkAdminData is present', () => {
+			window.JetpackNetworkAdminData = {
+				sitesUrl: '/',
+				settingsUrl: '/',
+			};
+
+			render( <JetpackFooter /> );
+
+			expect( screen.queryByRole( 'link', { name: 'Features' } ) ).not.toBeInTheDocument();
+			expect( screen.queryByRole( 'link', { name: 'Help' } ) ).not.toBeInTheDocument();
+		} );
+
+		it.each( [ undefined, false ] )( 'hides unavailable My Jetpack links (%s)', isAvailable => {
+			window.JetpackScriptData.myJetpack = { isAvailable };
+
+			render( <JetpackFooter menu={ menu } /> );
+
+			expect( screen.queryByRole( 'link', { name: 'Features' } ) ).not.toBeInTheDocument();
+			expect( screen.queryByRole( 'link', { name: 'Help' } ) ).not.toBeInTheDocument();
+			expect( screen.getByRole( 'link', { name: 'Link' } ) ).toBeInTheDocument();
+		} );
+
+		it( 'hides My Jetpack links without script data', () => {
+			delete window.JetpackScriptData;
+
+			render( <JetpackFooter /> );
+
+			expect( screen.queryByRole( 'link', { name: 'Features' } ) ).not.toBeInTheDocument();
+			expect( screen.queryByRole( 'link', { name: 'Help' } ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'links to available My Jetpack routes', () => {
+			window.JetpackScriptData.site.admin_url = '/wp-admin/';
+
+			render( <JetpackFooter /> );
+
+			expect( screen.getByRole( 'link', { name: 'Features' } ) ).toHaveAttribute(
+				'href',
+				'/wp-admin/admin.php?page=my-jetpack#/features'
+			);
+			expect( screen.getByRole( 'link', { name: 'Help' } ) ).toHaveAttribute(
+				'href',
+				'/wp-admin/admin.php?page=my-jetpack#/help'
+			);
+		} );
+
+		it( 'links users who cannot see Features to Help only', () => {
+			window.JetpackScriptData.user.current_user.capabilities.manage_options = false;
+
+			render( <JetpackFooter /> );
+
+			expect( screen.queryByRole( 'link', { name: 'Features' } ) ).not.toBeInTheDocument();
+			expect( screen.getByRole( 'link', { name: 'Help' } ) ).toBeInTheDocument();
+		} );
+
+		it( 'hides default links on WordPress.com platform sites', () => {
+			window.JetpackScriptData.site.is_wpcom_platform = true;
+
+			render( <JetpackFooter /> );
+
+			expect( screen.queryByRole( 'link', { name: 'Features' } ) ).not.toBeInTheDocument();
+			expect( screen.queryByRole( 'link', { name: 'Help' } ) ).not.toBeInTheDocument();
+		} );
+
+		it( 'should match the snapshot', () => {
+			const { container } = render( <JetpackFooter className={ className } menu={ menu } /> );
+			expect( container ).toMatchSnapshot( 'all props' );
+		} );
+	} );
+
+	describe( 'Fire events', () => {
+		const onClick = jest.fn();
+		const onKeyDown = jest.fn();
+		const menu = [
+			{
+				label: 'Link',
+				href: '/',
+				onClick,
+				onKeyDown,
+			},
+		];
+
+		it( 'should call the menu item onClick function', async () => {
+			const user = userEvent.setup();
+
+			render( <JetpackFooter menu={ menu } /> );
+
+			const element = screen.getByRole( 'link', { name: menu[ 0 ].label } );
+
+			await user.click( element );
+
+			expect( onClick ).toHaveBeenCalled();
+		} );
+
+		it( 'should call the menu item onKeyDown function', async () => {
+			const user = userEvent.setup();
+
+			render( <JetpackFooter menu={ menu } /> );
+
+			const element = screen.getByRole( 'link', { name: menu[ 0 ].label } );
+
+			// Need to focus on element first
+			await user.click( element );
+			await user.keyboard( '[Enter]' );
+
+			expect( onKeyDown ).toHaveBeenCalled();
+		} );
+	} );
+} );

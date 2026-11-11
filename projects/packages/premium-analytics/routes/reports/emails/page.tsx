@@ -1,0 +1,125 @@
+/**
+ * External dependencies
+ */
+import { Icon } from '@jetpack-premium-analytics/externals';
+import { jetpack } from '@jetpack-premium-analytics/icons';
+import { StatsBreadcrumbs } from '@jetpack-premium-analytics/ui';
+import {
+	ExporterCsvAction,
+	ReportPageLayout,
+	ReportErrorState,
+	ReportRecordsTable,
+	emailsCsvExporter,
+	toViewLiveUrl,
+} from '@jetpack-premium-analytics/widgets-toolkit';
+import { Page } from '@wordpress/admin-ui';
+import { useMemo } from '@wordpress/element';
+import { __ } from '@wordpress/i18n';
+/**
+ * Internal dependencies
+ */
+import reportPageStyles from '../page.module.scss';
+import { REPORTS } from '../registry';
+import { useReportParams } from '../use-report-params';
+import { createViewLiveAction } from '../view-live-action';
+import { getEmailsFields, useEmailsReportRecords } from './config';
+import type { StatsEmailSummaryItem } from '@jetpack-premium-analytics/data';
+import type { JSX } from 'react';
+
+/**
+ * Initial records-table view: newest emails first (matching the endpoint's
+ * own sort), the title column absorbs spare width, and the numeric columns
+ * stay compact and right-aligned.
+ */
+const RECORDS_VIEW = {
+	sort: { field: 'date', direction: 'desc' as const },
+	layout: {
+		styles: {
+			label: { width: '100%' },
+			opens: { align: 'end' as const },
+			opens_rate: { align: 'end' as const },
+			clicks: { align: 'end' as const },
+			clicks_rate: { align: 'end' as const },
+		},
+	},
+};
+
+/**
+ * Stable row id for the records table.
+ *
+ * @param item - The email summary row.
+ * @return The row id.
+ */
+function getEmailRowId( item: StatsEmailSummaryItem ): string {
+	return String( item.id ?? item.label );
+}
+
+/**
+ * All-time summary capped at 30 rows, so only the breadcrumb header and records table
+ * render — no date filters, tabs, or performance chart. Row titles link to the post
+ * detail page's Email opens tab.
+ *
+ * @return The Emails report page.
+ */
+function EmailsReport(): JSX.Element {
+	const records = useEmailsReportRecords();
+	const reportParams = useReportParams();
+	const fields = useMemo( () => getEmailsFields(), [] );
+	const actions = useMemo(
+		() => [
+			// The summary leaves `link` untyped; the URL gate only wants a string.
+			createViewLiveAction< StatsEmailSummaryItem >( email =>
+				toViewLiveUrl( 'post', email.id, typeof email.link === 'string' ? email.link : null )
+			),
+		],
+		[]
+	);
+
+	const { getLabel } = REPORTS.emails;
+
+	return (
+		<Page
+			className={ reportPageStyles.page }
+			visual={ <Icon icon={ jetpack } /> }
+			breadcrumbs={ <StatsBreadcrumbs items={ [ { label: getLabel() } ] } /> }
+			actions={
+				<ExporterCsvAction
+					exporter={ emailsCsvExporter }
+					items={ records.rows }
+					status={ records }
+					reportParams={ reportParams }
+				/>
+			}
+		>
+			<ReportPageLayout title={ getLabel() }>
+				<ReportErrorState
+					status={ records }
+					retryDescription={ __(
+						"We couldn't load emails. Please try again in a moment.",
+						'jetpack-premium-analytics-pkg'
+					) }
+				>
+					<ReportRecordsTable< StatsEmailSummaryItem >
+						data={ records.rows }
+						fields={ fields }
+						getItemId={ getEmailRowId }
+						isLoading={ records.isLoading }
+						isFetching={ records.isFetching }
+						initialView={ RECORDS_VIEW }
+						searchLabel={ __( 'Search emails', 'jetpack-premium-analytics-pkg' ) }
+						actions={ actions }
+					/>
+				</ReportErrorState>
+			</ReportPageLayout>
+		</Page>
+	);
+}
+
+/**
+ * Emails report page (default export for the report registry).
+ *
+ * @return The Emails report page.
+ */
+export default function EmailsReportPage(): JSX.Element {
+	return <EmailsReport />;
+}

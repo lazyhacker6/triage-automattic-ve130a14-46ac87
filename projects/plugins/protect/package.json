@@ -1,0 +1,72 @@
+{
+	"private": true,
+	"description": "Security tools that keep your site safe and sound, from posts to plugins.",
+	"homepage": "https://jetpack.com",
+	"bugs": {
+		"url": "https://github.com/Automattic/jetpack/labels/[Plugin] Protect"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Automattic/jetpack.git",
+		"directory": "projects/plugins/protect"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Automattic",
+	"scripts": {
+		"build": "pnpm run clean && pnpm run build-client",
+		"build-client": "webpack",
+		"build-concurrently": "pnpm run clean && concurrently 'pnpm:build-client'",
+		"build-production-concurrently": "pnpm run clean && concurrently 'NODE_ENV=production BABEL_ENV=production pnpm run build-client' && pnpm run validate",
+		"clean": "rm -rf build/",
+		"typecheck": "tsgo --noEmit",
+		"validate": "pnpm exec validate-es build/",
+		"watch": "pnpm run build && webpack watch"
+	},
+	"browserslist": [
+		"extends @wordpress/browserslist-config"
+	],
+	"dependencies": {
+		"@automattic/jetpack-analytics": "workspace:*",
+		"@automattic/jetpack-base-styles": "workspace:*",
+		"@automattic/jetpack-components": "workspace:*",
+		"@automattic/jetpack-connection": "workspace:*",
+		"@automattic/jetpack-scan": "workspace:*",
+		"@tanstack/react-query": "5.102.8",
+		"@wordpress/a11y": "5.1.0",
+		"@wordpress/api-fetch": "8.1.0",
+		"@wordpress/components": "44.0.0",
+		"@wordpress/compose": "9.1.0",
+		"@wordpress/data": "11.1.0",
+		"@wordpress/date": "6.1.0",
+		"@wordpress/element": "10.1.0",
+		"@wordpress/i18n": "7.1.0",
+		"@wordpress/icons": "20.0.0",
+		"@wordpress/ui": "0.26.0",
+		"@wordpress/url": "5.1.0",
+		"camelize": "1.0.1",
+		"clsx": "2.1.1",
+		"moment": "2.31.0",
+		"prop-types": "15.8.1",
+		"react": "19.3.0",
+		"react-dom": "19.3.0",
+		"react-router": "7.18.2"
+	},
+	"devDependencies": {
+		"@automattic/jetpack-webpack-config": "workspace:*",
+		"@babel/core": "7.29.13",
+		"@babel/runtime": "7.29.13",
+		"@types/react": "19.3.0",
+		"@typescript/native-preview": "7.0.0-dev.20260707.2",
+		"@wordpress/browserslist-config": "7.1.0",
+		"@wordpress/theme": "4.0.0",
+		"@wordpress/theme-build-tools": "1.0.0",
+		"autoprefixer": "10.4.20",
+		"concurrently": "10.0.5",
+		"postcss": "8.5.23",
+		"postcss-loader": "8.2.0",
+		"sass-embedded": "1.97.3",
+		"sass-loader": "16.0.5",
+		"webpack": "5.112.2",
+		"webpack-cli": "7.2.1"
+	}
+}

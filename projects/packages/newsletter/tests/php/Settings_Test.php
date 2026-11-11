@@ -1,0 +1,826 @@
+<?php
+/**
+ * Tests for the Settings class.
+ *
+ * @package automattic/jetpack-newsletter
+ */
+
+namespace Automattic\Jetpack\Newsletter\Tests;
+
+use Automattic\Jetpack\Connection\Manager as Connection_Manager;
+use Automattic\Jetpack\Feature_Flags\Feature_Flags;
+use Automattic\Jetpack\Newsletter\Settings;
+use Automattic\Jetpack\Newsletter\Subscriber_Stats_Controller;
+use Automattic\Jetpack\WP_Build_Polyfills\WP_Build_Polyfills;
+use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
+use WorDBless\BaseTestCase;
+
+/**
+ * Test class for Settings.
+ *
+ * @covers \Automattic\Jetpack\Newsletter\Settings
+ */
+#[CoversClass( Settings::class )]
+class Settings_Test extends BaseTestCase {
+
+	/**
+	 * The screen enter_newsletter_admin_request() replaced, or false if it has not run.
+	 *
+	 * @var \WP_Screen|null|false
+	 */
+	private $previous_screen = false;
+
+	/**
+	 * Set up before each test.
+	 */
+	public function set_up() {
+		parent::set_up();
+
+		// Reset the in-process Host platform cache so per-test constants take effect.
+		\Automattic\Jetpack\Constants::clear_constants();
+		\Automattic\Jetpack\Status\Cache::clear();
+		Feature_Flags::reset();
+
+		// Reset the static initialized flag between tests.
+		$reflection = new \ReflectionClass( Settings::class );
+		$property   = $reflection->getProperty( 'initialized' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$property->setAccessible( true );
+		}
+		$property->setValue( null, false );
+
+		// Reset Subscriber_Stats_Controller's own static registration guard, and the
+		// rest_api_init hook it may have attached in an earlier test, so route
+		// presence assertions don't depend on test execution order.
+		$stats_reflection = new \ReflectionClass( Subscriber_Stats_Controller::class );
+		$stats_property   = $stats_reflection->getProperty( 'registered' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$stats_property->setAccessible( true );
+		}
+		$stats_property->setValue( null, false );
+		remove_all_actions( 'rest_api_init' );
+
+		// Clear any existing hooks.
+		remove_all_actions( 'admin_menu' );
+		remove_all_actions( 'admin_init' );
+		remove_all_actions( 'admin_enqueue_scripts' );
+		remove_all_actions( 'current_screen' );
+		remove_all_filters( 'jetpack_module_configuration_url_subscriptions' );
+		remove_all_filters( 'jetpack_active_modules' );
+		remove_all_filters( 'jetpack_feature_flag_enabled' );
+		remove_all_filters( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG );
+		remove_all_filters( Settings::MODERNIZATION_FILTER );
+
+		// Clear the load action registered by add_wp_admin_menu on success.
+		remove_all_actions( 'load-jetpack_page_jetpack-newsletter' );
+		remove_all_actions( 'load-admin_page_jetpack-newsletter' );
+	}
+
+	/**
+	 * Tear down after each test.
+	 */
+	public function tear_down() {
+		\Jetpack_Options::delete_option( 'id' );
+		\Jetpack_Options::delete_option( 'blog_token' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		unset( $_GET['page'] );
+		wp_set_current_user( 0 );
+
+		// Writing_Prompt_Widget_Test relies on the `dashboard` screen an earlier test here leaves behind.
+		if ( false !== $this->previous_screen ) {
+			$GLOBALS['current_screen'] = $this->previous_screen;
+			$this->previous_screen     = false;
+		}
+
+		remove_all_filters( Settings::MODERNIZATION_FILTER );
+		remove_all_filters( 'jetpack_show_newsletter_menu_item' );
+		remove_all_filters( 'site_url' );
+		remove_all_filters( 'home_url' );
+		remove_all_filters( 'jetpack_feature_flag_enabled' );
+		remove_all_filters( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG );
+		Feature_Flags::reset();
+
+		// Dequeue any scripts that may have leaked into globals during the test.
+		wp_dequeue_script( 'jp-tracks' );
+		wp_dequeue_script( 'jetpack-newsletter' );
+		wp_deregister_script( 'jp-tracks' );
+		wp_deregister_script( 'jetpack-newsletter' );
+		wp_deregister_script( 'wp-theme' );
+
+		// The polyfill registrar keeps its request map, hook latch, and version
+		// threshold in process-global statics. Reset them so a legacy-surface
+		// test cannot leak state into — or read state from — another test.
+		$this->reset_wp_build_polyfills_statics();
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Reset WP_Build_Polyfills' static state between tests.
+	 *
+	 * Mirrors WP_Build_Polyfills_Test's own tear_down: the registrar records
+	 * requested handles, whether it has hooked wp_default_scripts, and the
+	 * force-replacement version threshold in statics that otherwise persist
+	 * across tests in the same process.
+	 */
+	private function reset_wp_build_polyfills_statics() {
+		if ( ! class_exists( WP_Build_Polyfills::class ) ) {
+			return;
+		}
+
+		$statics = array(
+			'requested'            => array(),
+			'hooked'               => false,
+			'wp_version_threshold' => '7.0',
+		);
+
+		foreach ( $statics as $name => $value ) {
+			$property = new \ReflectionProperty( WP_Build_Polyfills::class, $name );
+			if ( PHP_VERSION_ID < 80100 ) {
+				$property->setAccessible( true );
+			}
+			$property->setValue( null, $value );
+		}
+	}
+
+	/**
+	 * Test that add_wp_admin_menu does not register the menu when not connected.
+	 */
+	public function test_add_wp_admin_menu_does_not_register_menu_when_not_connected() {
+		// Ensure disconnected state.
+		\Jetpack_Options::delete_option( 'id' );
+		\Jetpack_Options::delete_option( 'blog_token' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		$settings = new Settings();
+		$settings->add_wp_admin_menu();
+
+		$this->assertFalse(
+			has_action( 'load-jetpack_page_jetpack-newsletter', array( $settings, 'admin_init' ) ),
+			'Newsletter menu should not be registered when site is not connected'
+		);
+	}
+
+	/**
+	 * Test that add_wp_admin_menu registers the menu when connected and the
+	 * subscriptions module is active.
+	 */
+	public function test_add_wp_admin_menu_registers_menu_when_connected() {
+		// Simulate connected state.
+		\Jetpack_Options::update_option( 'id', 1234 );
+		\Jetpack_Options::update_option( 'blog_token', 'test_token.secret' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		add_filter( 'jetpack_active_modules', array( $this, 'mock_subscriptions_active' ) );
+
+		$settings = new Settings();
+		$settings->add_wp_admin_menu();
+
+		$this->assertNotFalse(
+			has_action( 'load-jetpack_page_jetpack-newsletter', array( $settings, 'admin_init' ) ),
+			'Newsletter menu should be registered when site is connected'
+		);
+	}
+
+	/**
+	 * Test that the modernized dashboard skips registering the menu when the
+	 * subscriptions module is inactive.
+	 */
+	public function test_add_wp_admin_menu_does_not_register_menu_when_module_inactive() {
+		// Simulate connected state; leave the subscriptions module inactive.
+		\Jetpack_Options::update_option( 'id', 1234 );
+		\Jetpack_Options::update_option( 'blog_token', 'test_token.secret' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		// Opt into the modernized dashboard (the default is off); with the module
+		// inactive the menu must be skipped.
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_true' );
+
+		$settings = new Settings();
+		$settings->add_wp_admin_menu();
+
+		$this->assertFalse(
+			has_action( 'load-jetpack_page_jetpack-newsletter', array( $settings, 'admin_init' ) ),
+			'Newsletter menu should not be registered on the modernized dashboard when the subscriptions module is off'
+		);
+	}
+
+	/**
+	 * Test that the legacy (unmodernized) dashboard still registers the menu when
+	 * the subscriptions module is inactive — the module gate must not change
+	 * non-modernized behavior.
+	 */
+	public function test_add_wp_admin_menu_registers_menu_when_module_inactive_but_not_modernized() {
+		// Simulate connected state; leave the subscriptions module inactive.
+		\Jetpack_Options::update_option( 'id', 1234 );
+		\Jetpack_Options::update_option( 'blog_token', 'test_token.secret' );
+		( new Connection_Manager() )->reset_connection_status();
+
+		// Opt out of modernization so the legacy code path runs.
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+
+		$settings = new Settings();
+		$settings->add_wp_admin_menu();
+
+		$this->assertNotFalse(
+			has_action( 'load-jetpack_page_jetpack-newsletter', array( $settings, 'admin_init' ) ),
+			'Legacy Newsletter menu should still register when the subscriptions module is off'
+		);
+	}
+
+	/**
+	 * Mock the subscriptions module being active.
+	 *
+	 * @return string[]
+	 */
+	public function mock_subscriptions_active() {
+		return array( 'subscriptions' );
+	}
+
+	/**
+	 * `is_modernized()` is the canonical gate used by `maybe_load_wp_build`,
+	 * `add_wp_admin_menu`, and `load_admin_scripts`. The staged rollout is complete:
+	 * the modernized experience now defaults on for every site, so the value
+	 * `apply_filters` receives must be true.
+	 */
+	public function test_is_modernized_defaults_to_true() {
+		$this->assertTrue(
+			self::call_private_static_is_modernized(),
+			'Modernization gate must default to true now that the rollout is at 100%.'
+		);
+	}
+
+	/**
+	 * Hosts that need the legacy AdminPage surface back must still be able to
+	 * opt out — a single `__return_false` listener has to win over the new default.
+	 */
+	public function test_is_modernized_can_be_disabled_by_filter() {
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+
+		$this->assertFalse(
+			self::call_private_static_is_modernized(),
+			'A consumer filter returning false must take precedence over the modernization default.'
+		);
+	}
+
+	/**
+	 * Test that the Overview feature flag is registered enabled by default.
+	 */
+	public function test_register_feature_flags_registers_overview_enabled_by_default() {
+		Settings::register_feature_flags();
+
+		$this->assertSame(
+			array(
+				'default'     => true,
+				'description' => 'Enable the Newsletter Overview and Stats tabs.',
+				'owner'       => 'jetpack-newsletter',
+				'name'        => Settings::OVERVIEW_FEATURE_FLAG,
+			),
+			Feature_Flags::get( Settings::OVERVIEW_FEATURE_FLAG )
+		);
+	}
+
+	/**
+	 * Test that script data exposes the Overview feature flag, enabled by default.
+	 */
+	public function test_add_script_data_exposes_overview_enabled_by_default() {
+		Settings::register_feature_flags();
+
+		$data = ( new Settings() )->add_script_data( array() );
+
+		$this->assertTrue( $data['newsletter']['overviewEnabled'] );
+	}
+
+	/**
+	 * Test that script data exposes an Overview feature flag disabled by filter.
+	 */
+	public function test_add_script_data_exposes_overview_disabled_by_filter() {
+		Settings::register_feature_flags();
+		add_filter( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG, '__return_false' );
+
+		$data = ( new Settings() )->add_script_data( array() );
+
+		$this->assertFalse( $data['newsletter']['overviewEnabled'] );
+	}
+
+	/**
+	 * Test that the Stats REST routes are not registered while the Overview flag
+	 * that also gates them is disabled.
+	 *
+	 * Unlike Overview's own UI chrome, Stats exposes real subscriber/email data
+	 * over REST, so the routes themselves — not just the UI — must stay
+	 * unregistered while off. Stats is a temporary standalone page that shares
+	 * Overview's flag rather than getting its own.
+	 */
+	public function test_register_feature_flags_does_not_register_stats_routes_when_overview_disabled() {
+		add_filter( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG, '__return_false' );
+
+		global $wp_rest_server;
+		$wp_rest_server = new \WP_REST_Server();
+
+		Settings::register_feature_flags();
+		do_action( 'rest_api_init' );
+
+		$routes = rest_get_server()->get_routes();
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/subscribers', $routes );
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/emails/summary', $routes );
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/recent-posts', $routes );
+	}
+
+	/**
+	 * Test that the Stats REST routes are registered once the shared Overview
+	 * flag is enabled.
+	 */
+	public function test_register_feature_flags_registers_stats_routes_when_overview_enabled() {
+		add_filter( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG, '__return_true' );
+
+		global $wp_rest_server;
+		$wp_rest_server = new \WP_REST_Server();
+
+		Settings::register_feature_flags();
+		do_action( 'rest_api_init' );
+
+		$routes = rest_get_server()->get_routes();
+		$this->assertArrayHasKey( '/wpcom/v2/newsletter/stats/subscribers', $routes );
+		$this->assertArrayHasKey( '/wpcom/v2/newsletter/stats/emails/summary', $routes );
+		$this->assertArrayHasKey( '/wpcom/v2/newsletter/stats/recent-posts', $routes );
+	}
+
+	public function test_does_not_register_stats_routes_on_wpcom_simple() {
+		\Automattic\Jetpack\Constants::set_constant( 'IS_WPCOM', true );
+		\Automattic\Jetpack\Status\Cache::clear();
+		add_filter( 'jetpack_feature_flag_enabled_' . Settings::OVERVIEW_FEATURE_FLAG, '__return_true' );
+
+		global $wp_rest_server;
+		$wp_rest_server = new \WP_REST_Server();
+
+		Settings::register_feature_flags();
+		do_action( 'rest_api_init' );
+
+		$routes = rest_get_server()->get_routes();
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/subscribers', $routes );
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/emails/summary', $routes );
+		$this->assertArrayNotHasKey( '/wpcom/v2/newsletter/stats/recent-posts', $routes );
+	}
+
+	/**
+	 * Regression test for NL-695: on a WordPress install living in a subdirectory,
+	 * `site_url` includes the subdirectory path (e.g. `example.com/pages`) while
+	 * `home_url` is the bare host (e.g. `example.com`). The "Add plans" URL must be
+	 * built from the home host so Calypso receives a valid site slug, not the
+	 * subdirectory path.
+	 */
+	public function test_add_script_data_payment_url_uses_home_host_on_subdirectory_install() {
+		add_filter( 'site_url', array( $this, 'mock_subdirectory_site_url' ) );
+		add_filter( 'home_url', array( $this, 'mock_subdirectory_home_url' ) );
+
+		$data = ( new Settings() )->add_script_data( array() );
+
+		$this->assertSame(
+			'https://cloud.jetpack.com/monetize/payments/example.com',
+			$data['newsletter']['setupPaymentPlansUrl'],
+			'Add plans URL must use the home host, not the site_url subdirectory path.'
+		);
+		$this->assertStringNotContainsString(
+			'pages',
+			$data['newsletter']['setupPaymentPlansUrl'],
+			'Add plans URL must not leak the site_url subdirectory segment.'
+		);
+	}
+
+	/**
+	 * Mock `site_url` for a subdirectory install (WordPress lives in `/pages`).
+	 *
+	 * @return string
+	 */
+	public function mock_subdirectory_site_url() {
+		return 'https://example.com/pages';
+	}
+
+	/**
+	 * Mock `home_url` for a subdirectory install (the site is served from the root).
+	 *
+	 * @return string
+	 */
+	public function mock_subdirectory_home_url() {
+		return 'https://example.com';
+	}
+
+	/**
+	 * Reflection helper for the private static `Settings::is_modernized()`.
+	 *
+	 * Going through reflection rather than `apply_filters()` ensures we test the
+	 * default value baked into the production code, not the value we pass in.
+	 *
+	 * @return bool
+	 */
+	private static function call_private_static_is_modernized() {
+		$method = new \ReflectionMethod( Settings::class, 'is_modernized' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$method->setAccessible( true );
+		}
+		return (bool) $method->invoke( null );
+	}
+
+	/**
+	 * `load_admin_scripts` must enqueue `jp-tracks` on the modernized surface so the
+	 * Tracks transport is loaded for `analytics.initialize`'s queue. The legacy
+	 * `jetpack-newsletter` bundle must NOT be enqueued when modernization is on.
+	 */
+	public function test_load_admin_scripts_enqueues_jp_tracks_on_modernized_surface() {
+		// Opt into the modernized surface (the default is off).
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_true' );
+		( new Settings() )->load_admin_scripts();
+
+		$this->assertTrue(
+			wp_script_is( 'jp-tracks', 'enqueued' ),
+			'jp-tracks must be enqueued on the modernized chassis so analytics.initialize has its transport.'
+		);
+		$this->assertFalse(
+			wp_script_is( 'jetpack-newsletter', 'enqueued' ),
+			'Legacy newsletter bundle must not be enqueued when modernization is on.'
+		);
+	}
+
+	/**
+	 * On the legacy surface (opt-out), `load_admin_scripts` must still enqueue
+	 * `jp-tracks` AND the legacy `jetpack-newsletter` bundle.
+	 */
+	public function test_load_admin_scripts_enqueues_legacy_bundle_when_modernization_disabled() {
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+
+		( new Settings() )->load_admin_scripts();
+
+		$this->assertTrue(
+			wp_script_is( 'jp-tracks', 'enqueued' ),
+			'jp-tracks must be enqueued on the legacy surface too.'
+		);
+		$this->assertTrue(
+			wp_script_is( 'jetpack-newsletter', 'enqueued' ),
+			'Legacy newsletter bundle must be enqueued when modernization is off.'
+		);
+	}
+
+	/**
+	 * Tracks events need the Jetpack site ID in `jpTracksContext` before `w.js` loads, on both surfaces.
+	 *
+	 * @dataProvider provide_modernization_states
+	 *
+	 * @param bool $modernized Whether the modernized dashboard is enabled.
+	 */
+	#[DataProvider( 'provide_modernization_states' )]
+	public function test_load_admin_scripts_sets_tracks_blog_id_before_transport( $modernized ) {
+		\Jetpack_Options::update_option( 'id', 987654321 );
+		add_filter( Settings::MODERNIZATION_FILTER, $modernized ? '__return_true' : '__return_false' );
+		wp_deregister_script( 'jp-tracks' );
+
+		( new Settings() )->load_admin_scripts();
+
+		$before = implode( "\n", (array) wp_scripts()->get_data( 'jp-tracks', 'before' ) );
+		$this->assertMatchesRegularExpression( '/window\.jpTracksContext\.blog_id\s*=\s*987654321\b/', $before );
+	}
+
+	/**
+	 * Data provider for the modernized and legacy dashboard surfaces.
+	 *
+	 * @return array
+	 */
+	public static function provide_modernization_states() {
+		return array(
+			'modernized' => array( true ),
+			'legacy'     => array( false ),
+		);
+	}
+
+	/**
+	 * The legacy bundle depends on the `wp-theme` script handle — it imports
+	 * `@wordpress/ui`, which reaches `@wordpress/theme`, and WP Core does not
+	 * register that handle. Only `WP_Build_Polyfills` does, and its full
+	 * registration runs on the modernized path alone. Without an explicit request
+	 * here, `wp_enqueue_script` silently drops `jetpack-newsletter` over the
+	 * unregistered dependency and the page renders blank.
+	 */
+	public function test_load_admin_scripts_registers_wp_theme_polyfill_on_legacy_surface() {
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+
+		// The polyfill only registers wp-theme when its build asset exists on
+		// disk. That build directory is gitignored and absent in CI PHP runs, so
+		// borrow WP_Build_Polyfills_Test's fixture approach and lay down a stub
+		// asset file when the real build is missing.
+		$fixture = $this->ensure_wp_theme_polyfill_asset();
+
+		// Core never registers wp-theme; start clean so the assertion reflects
+		// what our code registers rather than a leftover registration.
+		wp_deregister_script( 'wp-theme' );
+
+		try {
+			( new Settings() )->load_admin_scripts();
+
+			$consumers = WP_Build_Polyfills::get_consumers();
+			$this->assertContains(
+				'jetpack-newsletter',
+				$consumers['wp-theme'] ?? array(),
+				'The legacy newsletter bundle must be recorded as a wp-theme polyfill consumer.'
+			);
+
+			// The behaviour the bug was about: wp-theme is actually registered, so
+			// WordPress no longer drops jetpack-newsletter over a missing dependency.
+			$this->assertTrue(
+				wp_script_is( 'wp-theme', 'registered' ),
+				'The legacy surface must register wp-theme; Core never does, and the bundle depends on it.'
+			);
+		} finally {
+			$this->remove_wp_theme_polyfill_asset( $fixture );
+		}
+	}
+
+	/**
+	 * Ensure the polyfill's built wp-theme asset file exists so register() can
+	 * register the handle.
+	 *
+	 * The wp-build-polyfills build directory is gitignored, so it may be missing
+	 * during PHP test runs. When it is, write a minimal stub at the exact path
+	 * register() reads (dirname of the class file, two levels up, + /build).
+	 *
+	 * @return array {file, dirs} describing what we created, for cleanup. Empty
+	 *               when the real asset already exists and nothing was created.
+	 */
+	private function ensure_wp_theme_polyfill_asset() {
+		$reflector = new \ReflectionClass( WP_Build_Polyfills::class );
+		$asset_dir = dirname( $reflector->getFileName(), 2 ) . '/build/scripts/theme';
+		$asset     = $asset_dir . '/index.asset.php';
+
+		if ( file_exists( $asset ) ) {
+			return array();
+		}
+
+		// Create the missing directory chain, tracking what we made so tear-down
+		// removes only our fixture and never a real build artifact.
+		$missing = array();
+		$dir     = $asset_dir;
+		while ( ! is_dir( $dir ) ) {
+			$missing[] = $dir;
+			$dir       = dirname( $dir );
+		}
+		$created_dirs = array();
+		foreach ( array_reverse( $missing ) as $dir ) {
+			mkdir( $dir );
+			$created_dirs[] = $dir;
+		}
+
+		file_put_contents( $asset, "<?php return array( 'dependencies' => array(), 'version' => 'test' );\n" );
+
+		return array(
+			'file' => $asset,
+			'dirs' => $created_dirs,
+		);
+	}
+
+	/**
+	 * Remove the stub wp-theme asset created by ensure_wp_theme_polyfill_asset().
+	 *
+	 * @param array $fixture The {file, dirs} descriptor it returned.
+	 */
+	private function remove_wp_theme_polyfill_asset( $fixture ) {
+		if ( empty( $fixture ) ) {
+			return;
+		}
+
+		if ( isset( $fixture['file'] ) && file_exists( $fixture['file'] ) ) {
+			unlink( $fixture['file'] );
+		}
+
+		// Remove deepest-first so each directory is empty when we drop it.
+		foreach ( array_reverse( $fixture['dirs'] ?? array() ) as $dir ) {
+			if ( is_dir( $dir ) ) {
+				rmdir( $dir );
+			}
+		}
+	}
+
+	/**
+	 * `maybe_load_wp_build` is hooked at admin_menu priority 1 on every request,
+	 * but it must short-circuit unless the visitor is on `?page=jetpack-newsletter`.
+	 * It registers the screen alias on `admin_enqueue_scripts` as the easy-to-observe side effect.
+	 */
+	public function test_maybe_load_wp_build_short_circuits_off_newsletter_admin_request() {
+		unset( $_GET['page'] );
+
+		Settings::maybe_load_wp_build();
+
+		$this->assertFalse(
+			has_action( 'admin_enqueue_scripts', array( Settings::class, 'alias_screen_id_for_wp_build' ) ),
+			'maybe_load_wp_build must not register the screen alias when no admin page is requested.'
+		);
+	}
+
+	/**
+	 * When modernization is filtered off, `maybe_load_wp_build` must skip
+	 * registering the screen alias even on the Newsletter admin page.
+	 */
+	public function test_maybe_load_wp_build_short_circuits_when_modernization_disabled() {
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+		set_current_screen( 'dashboard' );
+		$_GET['page'] = 'jetpack-newsletter';
+
+		Settings::maybe_load_wp_build();
+
+		$this->assertFalse(
+			has_action( 'admin_enqueue_scripts', array( Settings::class, 'alias_screen_id_for_wp_build' ) ),
+			'maybe_load_wp_build must not register the screen alias when modernization is disabled.'
+		);
+	}
+
+	public function test_maybe_load_wp_build_hooks_the_screen_alias_around_the_generated_check() {
+		$this->enter_newsletter_admin_request();
+
+		Settings::maybe_load_wp_build();
+
+		$this->assertSame( 10, has_action( 'admin_enqueue_scripts', array( Settings::class, 'alias_screen_id_for_wp_build' ) ) );
+		$this->assertSame( 10, has_action( 'admin_enqueue_scripts', array( Settings::class, 'restore_screen_id_after_wp_build' ) ) );
+		$this->assertFalse( has_action( 'current_screen', array( Settings::class, 'alias_screen_id_for_wp_build' ) ) );
+	}
+
+	public function test_screen_id_is_restored_after_admin_enqueue_scripts() {
+		$this->enter_newsletter_admin_request();
+
+		Settings::maybe_load_wp_build();
+		do_action( 'current_screen', get_current_screen() );
+		do_action( 'admin_enqueue_scripts', 'jetpack_page_jetpack-newsletter' );
+
+		$this->assertSame( 'jetpack_page_jetpack-newsletter', get_current_screen()->id );
+	}
+
+	public function test_alias_screen_id_round_trip() {
+		$this->enter_newsletter_admin_request();
+		Settings::restore_screen_id_after_wp_build();
+		$this->assertSame( 'jetpack_page_jetpack-newsletter', get_current_screen()->id );
+
+		Settings::alias_screen_id_for_wp_build();
+		$this->assertSame( 'jetpack-newsletter-dashboard', get_current_screen()->id );
+
+		Settings::restore_screen_id_after_wp_build();
+		$this->assertSame( 'jetpack_page_jetpack-newsletter', get_current_screen()->id );
+
+		unset( $GLOBALS['current_screen'] );
+		Settings::alias_screen_id_for_wp_build();
+		Settings::restore_screen_id_after_wp_build();
+	}
+
+	/**
+	 * A hidden menu item registers under another screen ID.
+	 */
+	public function test_hidden_menu_item_registers_under_its_own_screen() {
+		$this->connect_site_with_subscriptions();
+		wp_set_current_user(
+			wp_insert_user(
+				array(
+					'user_login' => 'newsletter_admin_' . wp_rand( 1, PHP_INT_MAX ),
+					'user_pass'  => 'password',
+					'role'       => 'administrator',
+				)
+			)
+		);
+		add_filter( 'jetpack_show_newsletter_menu_item', '__return_false' );
+
+		$settings = new Settings();
+		$settings->add_wp_admin_menu();
+
+		$this->assertNotFalse( has_action( 'load-admin_page_jetpack-newsletter', array( $settings, 'admin_init' ) ) );
+	}
+
+	/**
+	 * Both dashboards render the JITM slot, so neither opts its screen out.
+	 */
+	public function test_dashboard_keeps_jitms() {
+		$this->connect_site_with_subscriptions();
+
+		( new Settings() )->add_wp_admin_menu();
+
+		$this->assertTrue( apply_filters( 'jetpack_display_jitms_on_screen', true, 'jetpack_page_jetpack-newsletter' ) );
+
+		add_filter( Settings::MODERNIZATION_FILTER, '__return_false' );
+
+		( new Settings() )->add_wp_admin_menu();
+
+		$this->assertTrue( apply_filters( 'jetpack_display_jitms_on_screen', true, 'jetpack_page_jetpack-newsletter' ) );
+	}
+
+	/**
+	 * Connect the site and turn the subscriptions module on, so add_wp_admin_menu() registers the page.
+	 */
+	private function connect_site_with_subscriptions() {
+		\Jetpack_Options::update_option( 'id', 1234 );
+		\Jetpack_Options::update_option( 'blog_token', 'test_token.secret' );
+		( new Connection_Manager() )->reset_connection_status();
+		add_filter( 'jetpack_active_modules', array( $this, 'mock_subscriptions_active' ) );
+	}
+
+	/**
+	 * Put the request on the Newsletter admin page.
+	 */
+	private function enter_newsletter_admin_request() {
+		$this->previous_screen = $GLOBALS['current_screen'] ?? null;
+		set_current_screen( 'jetpack_page_jetpack-newsletter' );
+		$_GET['page'] = 'jetpack-newsletter';
+	}
+
+	/**
+	 * Capture where redirect_retired_subscribers_page() sends the request.
+	 *
+	 * The method ends in `wp_safe_redirect()` + `exit`, so the redirect is intercepted
+	 * at the `wp_redirect` filter and aborted with an exception before either headers
+	 * or the exit are reached.
+	 *
+	 * @return string|null The redirect target, or null if no redirect happened.
+	 */
+	private function capture_retired_subscribers_redirect() {
+		$redirect = null;
+
+		$capture = /** @return never */ function ( $location ) use ( &$redirect ) {
+			$redirect = $location;
+			throw new \RuntimeException( 'redirected' );
+		};
+
+		add_filter( 'wp_redirect', $capture );
+
+		try {
+			Settings::redirect_retired_subscribers_page();
+		} catch ( \RuntimeException $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch
+			// Expected — stands in for the `exit` after the redirect.
+		} finally {
+			remove_filter( 'wp_redirect', $capture );
+		}
+
+		return $redirect;
+	}
+
+	/**
+	 * Give the current user the capability the retired page required.
+	 *
+	 * @return void
+	 */
+	private function set_up_admin_user() {
+		$user_id = wp_insert_user(
+			array(
+				'user_login' => 'newsletter_settings_admin_' . wp_rand(),
+				'user_pass'  => 'password',
+				'user_email' => 'newsletter-settings-admin-' . wp_rand() . '@example.com',
+				'role'       => 'administrator',
+			)
+		);
+		if ( is_wp_error( $user_id ) ) {
+			$this->fail( $user_id->get_error_message() );
+		}
+		wp_set_current_user( $user_id );
+	}
+
+	/**
+	 * A bookmark for the retired Subscribers page lands on Newsletter.
+	 */
+	public function test_retired_subscribers_page_redirects_to_newsletter() {
+		$this->set_up_admin_user();
+		$_GET['page'] = Settings::RETIRED_SUBSCRIBERS_PAGE_SLUG;
+
+		$this->assertSame(
+			admin_url( 'admin.php?page=' . Settings::ADMIN_PAGE_SLUG ),
+			$this->capture_retired_subscribers_redirect()
+		);
+	}
+
+	/**
+	 * Witness for the assertion above: the capture harness returns null when nothing
+	 * redirects, so an asserted null is the slug check and not a blind spot.
+	 */
+	public function test_other_pages_are_not_redirected() {
+		$this->set_up_admin_user();
+		$_GET['page'] = Settings::ADMIN_PAGE_SLUG;
+
+		$this->assertNull( $this->capture_retired_subscribers_redirect() );
+	}
+
+	/**
+	 * Nobody without `manage_options` could open the retired page, so they keep
+	 * WordPress's own denial instead of being bounced to a page they also cannot see.
+	 */
+	public function test_retired_subscribers_page_is_not_redirected_without_the_capability() {
+		wp_set_current_user( 0 );
+		$_GET['page'] = Settings::RETIRED_SUBSCRIBERS_PAGE_SLUG;
+
+		$this->assertNull( $this->capture_retired_subscribers_redirect() );
+	}
+
+	/**
+	 * The redirect has to be wired up, not just callable.
+	 */
+	public function test_init_hooks_registers_the_retired_subscribers_redirect() {
+		( new Settings() )->init_hooks();
+
+		$this->assertSame(
+			1,
+			has_action( 'admin_menu', array( Settings::class, 'redirect_retired_subscribers_page' ) )
+		);
+	}
+}

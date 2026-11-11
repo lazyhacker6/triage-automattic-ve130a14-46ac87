@@ -1,0 +1,97 @@
+@use "$css/main/mixins";
+@use "$css/main/variables";
+
+// TODO: This is a copy of the styles from the critical-css/status component.
+// We should move this to a shared location.
+
+.status {
+	margin-bottom: 16px;
+	font-size: 14px;
+	line-height: 22px;
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+
+	&:last-child {
+		margin-bottom: 0;
+	}
+
+	@include mixins.breakpoint( xs ) {
+		display: block;
+	}
+
+	.summary {
+		margin-right: 5px;
+		flex-grow: 1;
+		position: relative;
+
+		.successes,
+		.generating {
+			color: variables.$gray_40;
+
+			@include mixins.breakpoint( md ) {
+				margin-right: 115px;
+			}
+		}
+	}
+}
+
+.well {
+
+	@include mixins.settings-well();
+
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--wpds-dimension-gap-md);
+	font-size: var(--wpds-typography-font-size-md);
+	line-height: var(--wpds-typography-line-height-sm);
+
+	.summary {
+		flex-grow: 1;
+		color: var(--wpds-color-foreground-content-neutral-weak);
+	}
+}
+
+.pending {
+	display: flex;
+	flex-direction: column;
+	gap: var(--wpds-dimension-gap-sm);
+
+	.progress {
+		inline-size: 100%;
+	}
+
+	.track {
+		block-size: var(--wpds-dimension-size-5xs);
+		border-radius: var(--wpds-border-radius-md);
+	}
+
+	// Hold the indicator still; Core only slows it.
+	@media (prefers-reduced-motion: reduce) {
+
+		.indicator {
+			animation: none;
+			inset-inline-start: 25%;
+		}
+	}
+}
+
+.status,
+.well {
+
+	button {
+
+		&:global(.components-button.has-icon) {
+			min-width: auto;
+		}
+	}
+
+	.optimize-button:global(.components-button) {
+
+		&:disabled {
+			background: transparent;
+			opacity: 0.5;
+		}
+	}
+}

@@ -1,0 +1,29 @@
+.tabList {
+	// The page gutter, and the page header's fill: the tab bar and the section
+	// header under it are page chrome, so the block above the content reads as
+	// one plane. The header below owns the spacing between the two.
+	padding-inline: var(--wpds-dimension-padding-2xl);
+	background: var(--wpds-color-background-surface-neutral-strong);
+	border-block-end:
+		var(--wpds-border-width-xs) solid
+		var(--wpds-color-stroke-surface-neutral-weak);
+}
+
+/*
+ * The tablist sizes to its content (width: fit-content) and its tabs can
+ * neither shrink nor wrap, so without a clamp it overflows the page on
+ * narrow viewports instead of scrolling in place. Clamping to the wrapper
+ * width activates the tablist's own overflow handling: inline scrolling
+ * plus the fade masks at the clipped edge(s).
+ */
+.tabList :global([role="tablist"]) {
+	max-inline-size: 100%;
+}
+
+.pendingLabel {
+	display: inline-block;
+	block-size: 1em;
+	inline-size: 5em;
+	vertical-align: middle;
+	border-radius: var(--wpds-border-radius-md);
+}

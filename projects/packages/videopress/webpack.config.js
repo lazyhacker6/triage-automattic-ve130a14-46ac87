@@ -1,0 +1,184 @@
+const path = require( 'path' );
+const jetpackWebpackConfig = require( '@automattic/jetpack-webpack-config/webpack' );
+
+// Configuration shared by every build in this package.
+const baseConfig = {
+	mode: jetpackWebpackConfig.mode,
+	devtool: jetpackWebpackConfig.devtool,
+	output: {
+		...jetpackWebpackConfig.output,
+		path: path.resolve( './build' ),
+	},
+	optimization: {
+		...jetpackWebpackConfig.optimization,
+	},
+	resolve: {
+		...jetpackWebpackConfig.resolve,
+	},
+	node: false,
+	module: {
+		strictExportPresence: true,
+		rules: [
+			// Transpile JavaScript
+			jetpackWebpackConfig.TranspileRule( {
+				exclude: /node_modules\//,
+			} ),
+
+			// Transpile @automattic/jetpack-* in node_modules too.
+			jetpackWebpackConfig.TranspileRule( {
+				includeNodeModules: [ '@automattic/jetpack-' ],
+			} ),
+
+			// Workarounds for non-extracted `@wordpress/*` packages.
+			...jetpackWebpackConfig.BundledWpPkgsTranspileRules(),
+
+			// Handle CSS.
+			jetpackWebpackConfig.CssRule( {
+				extensions: [ 'css', 'sass', 'scss' ],
+				extraLoaders: [
+					{
+						loader: 'postcss-loader',
+						options: {
+							postcssOptions: { config: path.join( __dirname, 'postcss.config.js' ) },
+						},
+					},
+					{ loader: 'sass-loader', options: { api: 'modern-compiler' } },
+				],
+			} ),
+
+			// Handle images.
+			jetpackWebpackConfig.FileRule(),
+		],
+	},
+	externals: {
+		...jetpackWebpackConfig.externals,
+		jetpackConfig: JSON.stringify( {
+			consumer_slug: 'jetpack-videopress',
+		} ),
+	},
+};
+
+module.exports = [
+	{
+		...baseConfig,
+		entry: {
+			// Video block
+			'block-editor/blocks/video/index': './src/client/block-editor/blocks/video/index.ts',
+			'block-editor/blocks/video/view': './src/client/block-editor/blocks/video/view.ts',
+
+			// Video Playlist block
+			'block-editor/blocks/playlist/index': './src/client/block-editor/blocks/playlist/index.tsx',
+			'block-editor/blocks/playlist/view': './src/client/block-editor/blocks/playlist/view.ts',
+
+			// Latest Videos Playlist block: editor only, it shares the playlist block's view assets.
+			'block-editor/blocks/latest-videos-playlist/index':
+				'./src/client/block-editor/blocks/latest-videos-playlist/index.ts',
+
+			// All Playlists block
+			'block-editor/blocks/all-playlists/index':
+				'./src/client/block-editor/blocks/all-playlists/index.tsx',
+			'block-editor/blocks/all-playlists/view':
+				'./src/client/block-editor/blocks/all-playlists/view.ts',
+
+			// Channel blocks: server-rendered, editor script only.
+			'block-editor/blocks/channel-details/index':
+				'./src/client/block-editor/blocks/channel-details/index.tsx',
+			'block-editor/blocks/video-details/index':
+				'./src/client/block-editor/blocks/video-details/index.tsx',
+			'block-editor/blocks/playlist-details/index':
+				'./src/client/block-editor/blocks/playlist-details/index.tsx',
+			'block-editor/blocks/episode-navigation/index':
+				'./src/client/block-editor/blocks/episode-navigation/index.tsx',
+
+			'lib/token-bridge': './src/client/lib/token-bridge/index.ts',
+			'lib/player-bridge': './src/client/lib/player-bridge/index.ts',
+			'lib/inline-player': './src/client/lib/inline-player/index.ts',
+
+			// Page-level shell stylesheet for the modernized dashboard. CSS-only
+			// entry: emits build/dashboard-shell/index.css enqueued by
+			// class-admin-ui.php so every route inherits the admin-page-layout
+			// mixin (fixed #wpbody-content, scrollable middle, pinned footer)
+			// without each route having to invoke it itself.
+			'dashboard-shell/index': './src/dashboard/admin-shell.scss',
+
+			// Block editor extensions
+			'block-editor/index': './src/client/block-editor/index.ts',
+			// Divi editor extensions
+			'divi-editor/index': './src/client/divi-editor/index.js',
+		},
+		output: {
+			...baseConfig.output,
+			copy: [
+				{
+					context: 'src/client/block-editor/blocks',
+					from: './*/block.json',
+					filename: './block-editor/blocks/[path]/[name].json',
+				},
+				{
+					from: 'src/client/block-editor/extensions/index.json',
+					filename: './block-editor/extensions/index.json',
+				},
+				{
+					context: 'src/dashboard/components/onboarding-modal/images',
+					// Every extension in this folder has to be listed or the file
+					// silently 404s at runtime: JPEG and PNG for the stills, SVG
+					// for the wireframe brand artwork. Deliberately no video
+					// extensions — the plugin bundle must not ship one; the welcome
+					// modal's intro film is VideoPress-hosted (see intro-video.tsx).
+					from: './*.{jpeg,png,svg}',
+					filename: './dashboard/onboarding-modal/images/[name][ext]',
+				},
+			],
+		},
+		plugins: [ ...jetpackWebpackConfig.StandardPlugins() ],
+	},
+
+	// The Divi 5 Visual Builder module ships as a Divi extension, so it must bind
+	// to the `@wordpress/*` instances Divi vendors (`window.vendor.wp.*`) rather
+	// than the standard WordPress globals, which aren't reliably loaded in the
+	// builder. In particular Divi fires its module-registration action on its own
+	// `@wordpress/hooks` instance, so externalizing `@wordpress/hooks` there is
+	// what lets our `registerModule()` callback run.
+	{
+		...baseConfig,
+		entry: {
+			'divi-5/index': './src/client/divi-5/index.js',
+		},
+		output: {
+			...baseConfig.output,
+			copy: [
+				/*
+				 * Divi 5 module metadata read by PHP at runtime (module
+				 * registration and the Divi 5 Migrator). Copied into build/
+				 * because src/client is production-excluded from the package.
+				 */
+				{
+					context: 'src/client/divi-5/modules',
+					from: './*/module.json',
+					filename: './divi-5/modules/[path]/[name].json',
+				},
+				{
+					context: 'src/client/divi-5/modules',
+					from: './*/conversion-outline.json',
+					filename: './divi-5/modules/[path]/[name].json',
+				},
+			],
+		},
+		plugins: [
+			...jetpackWebpackConfig.StandardPlugins( {
+				DependencyExtractionPlugin: {
+					requestMap: {
+						'@wordpress/hooks': {
+							external: [ 'vendor', 'wp', 'hooks' ],
+							handle: 'divi-vendor-wp-hooks',
+						},
+						'@wordpress/i18n': {
+							external: [ 'vendor', 'wp', 'i18n' ],
+							handle: 'divi-vendor-wp-i18n',
+						},
+					},
+				},
+			} ),
+		],
+	},
+];
